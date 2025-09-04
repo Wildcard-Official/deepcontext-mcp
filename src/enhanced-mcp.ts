@@ -38,6 +38,7 @@ import type {
 interface McpConfig {
     jinaApiKey: string;
     turbopufferApiKey: string;
+    openaiApiKey?: string; // Optional - for query enhancement
     logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -108,6 +109,7 @@ export class EnhancedCodexMcp {
         return {
             jinaApiKey: process.env.JINA_API_KEY || 'test',
             turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
+            openaiApiKey: process.env.OPENAI_API_KEY, // For query enhancement
             logLevel: (process.env.LOG_LEVEL as any) || 'info'
         };
     }
@@ -723,6 +725,26 @@ export class EnhancedCodexMcp {
     async run(): Promise<void> {
         this.logger.info('Starting Enhanced Intelligent Context MCP Server...');
         
+        // Show configuration status
+        const capabilities = {
+            queryEnhancement: !!this.config.openaiApiKey,
+            reranking: !!this.config.jinaApiKey,
+            vectorSearch: !!this.config.turbopufferApiKey,
+            localBM25: true
+        };
+        
+        this.logger.info('🔧 Capabilities:', capabilities);
+        
+        if (!this.config.openaiApiKey) {
+            this.logger.warn('⚠️  OpenAI API key not provided - query enhancement will be disabled');
+            this.logger.info('💡 Set OPENAI_API_KEY environment variable to enable query enhancement');
+        }
+        
+        if (!this.config.jinaApiKey || this.config.jinaApiKey === 'test') {
+            this.logger.warn('⚠️  Jina API key not provided - result reranking will be disabled');
+            this.logger.info('💡 Set JINA_API_KEY environment variable to enable result reranking');
+        }
+        
         // Initialize the standalone MCP integration
         await this.standaloneMcp.initialize();
         
@@ -730,6 +752,9 @@ export class EnhancedCodexMcp {
         await this.server.connect(transport);
         
         this.logger.info('🚀 Enhanced MCP Server ready with slash commands and natural language interface!');
+        this.logger.info(`✨ Query Enhancement: ${capabilities.queryEnhancement ? '✅ Enabled' : '❌ Disabled'}`);
+        this.logger.info(`🔄 Result Reranking: ${capabilities.reranking ? '✅ Enabled' : '❌ Disabled'}`);
+        this.logger.info('📝 Local BM25 Search: ✅ Always Available');
     }
 }
 
