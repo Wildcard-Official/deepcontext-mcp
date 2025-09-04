@@ -3,7 +3,7 @@
 ## 🎯 Current Status
 
 ✅ **Standalone Repository Created**
-- Location: `/Users/Sripad/codex/submodules/intelligent-context-mcp/`
+- Location: `/Users/Sripad/codex/intelligent-context-mcp/`
 - Package name: `@wildcard-corp/intelligent-context-mcp`
 - Initial commit: `a27479c` with all MCP functionality
 - Build tested: All core components working
@@ -19,7 +19,7 @@
 
 ### Step 2: Push to Remote
 ```bash
-cd /Users/Sripad/codex/submodules/intelligent-context-mcp
+cd /Users/Sripad/codex/intelligent-context-mcp
 
 # Add remote origin
 git remote add origin https://github.com/Wildcard-Official/intelligent-context-mcp.git
@@ -39,7 +39,7 @@ rm -rf packages/@codex/intelligent-context-mcp
 git submodule add https://github.com/Wildcard-Official/intelligent-context-mcp.git packages/@codex/intelligent-context-mcp
 
 # Or add to a dedicated submodules directory
-git submodule add https://github.com/Wildcard-Official/intelligent-context-mcp.git submodules/intelligent-context-mcp
+git submodule add https://github.com/Wildcard-Official/intelligent-context-mcp.git intelligent-context-mcp
 ```
 
 ### Step 4: Update Main Repo References
