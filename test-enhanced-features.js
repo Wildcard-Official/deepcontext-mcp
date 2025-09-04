@@ -41,9 +41,8 @@ async function testEnhancedFeatures() {
             limit: 5,
             vectorWeight: 0.7,
             bm25Weight: 0.3,
-            enableQueryEnhancement: true,
-            enableReranking: true,
-            provider: config.openaiApiKey ? 'openai' : 'jina'
+            enableQueryEnhancement: !!config.openaiApiKey, // Only if OpenAI key available
+            enableReranking: !!config.jinaApiKey         // Only if Jina key available
         });
         
         console.log('✅ Hybrid Search Result:', {
@@ -93,7 +92,7 @@ async function testEnhancedFeatures() {
             hasOpenAI: !!config.openaiApiKey,
             hasJina: !!config.jinaApiKey,
             hasTurbopuffer: !!config.turbopufferApiKey,
-            queryEnhancement: !!config.openaiApiKey || !!config.jinaApiKey,
+            queryEnhancement: !!config.openaiApiKey, // OpenAI only
             reranking: !!config.jinaApiKey,
             localBM25: true // Always available with SQLite
         };

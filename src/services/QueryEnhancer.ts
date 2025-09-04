@@ -6,7 +6,6 @@
 import { Logger } from '../utils/Logger.js';
 
 export interface QueryEnhancementOptions {
-  provider?: 'openai' | 'jina';
   temperature?: number;
   maxTokens?: number;
 }
@@ -21,11 +20,10 @@ export class QueryEnhancer {
   private logger = new Logger('QueryEnhancer');
 
   constructor(
-    private openaiApiKey?: string,
-    private jinaApiKey?: string
+    private openaiApiKey?: string
   ) {
-    if (!openaiApiKey && !jinaApiKey) {
-      throw new Error('At least one API key (OpenAI or Jina) must be provided');
+    if (!openaiApiKey) {
+      throw new Error('OpenAI API key is required for query enhancement');
     }
   }
 
@@ -37,23 +35,12 @@ export class QueryEnhancer {
     if (query.trim().split(' ').length < 3) {
       return { original: query, enhanced: query, provider: 'none' };
     }
-
-    const provider = options.provider || (this.openaiApiKey ? 'openai' : 'jina');
     
     try {
-      let enhanced: string;
-      
-      if (provider === 'openai' && this.openaiApiKey) {
-        enhanced = await this.enhanceWithOpenAI(query, options);
-      } else if (provider === 'jina' && this.jinaApiKey) {
-        enhanced = await this.enhanceWithJina(query, options);
-      } else {
-        throw new Error(`Provider ${provider} not available or API key missing`);
-      }
-
-      return { original: query, enhanced, provider };
+      const enhanced = await this.enhanceWithOpenAI(query, options);
+      return { original: query, enhanced, provider: 'openai' };
     } catch (error) {
-      this.logger.warn('Query enhancement failed, using original', { 
+      this.logger.warn('OpenAI query enhancement failed, using original', { 
         query: query.substring(0, 50), 
         error: error instanceof Error ? error.message : 'Unknown error'
       });
@@ -99,48 +86,9 @@ export class QueryEnhancer {
     return enhanced && enhanced !== query ? enhanced : query;
   }
 
-  private async enhanceWithJina(
-    query: string, 
-    options: QueryEnhancementOptions
-  ): Promise<string> {
-    const response = await fetch('https://api.jina.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.jinaApiKey}`
-      },
-      body: JSON.stringify({
-        model: 'jina-chat-v1',
-        messages: [
-          {
-            role: 'system',
-            content: 'Rewrite the user query into better search keywords for code search.'
-          },
-          {
-            role: 'user',
-            content: `Rewrite this query: "${query}"`
-          }
-        ],
-        max_tokens: options.maxTokens || 100,
-        temperature: options.temperature || 0
-      }),
-      signal: AbortSignal.timeout(8000)
-    });
-
-    if (!response.ok) {
-      throw new Error(`Jina API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const enhanced = data.choices?.[0]?.message?.content?.trim();
-    
-    return enhanced && enhanced !== query ? enhanced : query;
-  }
-
-  isAvailable(): { openai: boolean; jina: boolean } {
+  isAvailable(): { openai: boolean } {
     return {
-      openai: !!this.openaiApiKey,
-      jina: !!this.jinaApiKey
+      openai: !!this.openaiApiKey
     };
   }
 }

@@ -24,5 +24,4 @@ export interface HybridSearchOptions {
   bm25Weight?: number;
   enableQueryEnhancement?: boolean;
   enableReranking?: boolean;
-  provider?: 'openai' | 'jina';
 }

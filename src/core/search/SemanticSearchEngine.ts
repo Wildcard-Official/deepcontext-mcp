@@ -127,12 +127,9 @@ export class SemanticSearchEngine {
             jinaApiKey?: string;
         } = {}
     ) {
-        // Initialize query enhancement if API keys provided
-        if (options.openaiApiKey || options.jinaApiKey) {
-            this.queryEnhancer = new QueryEnhancer(
-                options.openaiApiKey,
-                options.jinaApiKey
-            );
+        // Initialize query enhancement if OpenAI API key provided
+        if (options.openaiApiKey) {
+            this.queryEnhancer = new QueryEnhancer(options.openaiApiKey);
         }
 
         // Initialize reranking if Jina API key provided
@@ -153,10 +150,10 @@ export class SemanticSearchEngine {
         // Enhance query if enabled and available
         if (request.enableQueryEnhancement !== false && this.queryEnhancer) {
             try {
-                const enhanced = await this.queryEnhancer.enhance(
-                    request.query, 
-                    { provider: request.hybridOptions?.provider }
-                );
+                const enhanced = await this.queryEnhancer.enhance(request.query, {
+                    temperature: 0,
+                    maxTokens: 100
+                });
                 searchQuery = enhanced.enhanced;
                 if (enhanced.enhanced !== enhanced.original) {
                     console.log(`[SEARCH] ✨ Enhanced: "${enhanced.original}" → "${enhanced.enhanced}"`);

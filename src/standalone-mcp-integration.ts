@@ -89,13 +89,14 @@ export class StandaloneCodexMcp {
         // Create vector store and embedding integrations
         const vectorStore = this.createVectorStoreIntegration();
         const embedding = this.createEmbeddingIntegration();
+        // Query enhancement: OpenAI only, Reranking: Jina only
         this.searchEngine = new SemanticSearchEngine(
             vectorStore, 
             embedding,
             undefined, // legacy reranker
             {
-                openaiApiKey: this.config.openaiApiKey,
-                jinaApiKey: this.config.jinaApiKey
+                openaiApiKey: this.config.openaiApiKey, // For query enhancement
+                jinaApiKey: this.config.jinaApiKey      // For reranking
             }
         );
 
@@ -203,7 +204,6 @@ export class StandaloneCodexMcp {
         fileTypes?: string[];
         enableQueryEnhancement?: boolean;
         enableReranking?: boolean;
-        provider?: 'openai' | 'jina';
     } = {}): Promise<{
         success: boolean;
         results: any[];
@@ -231,8 +231,7 @@ export class StandaloneCodexMcp {
                 bm25Weight: options.bm25Weight || 0.3,
                 fileTypes: options.fileTypes,
                 enableQueryEnhancement: options.enableQueryEnhancement,
-                enableReranking: options.enableReranking,
-                provider: options.provider
+                enableReranking: options.enableReranking
             });
 
             const searchTime = Date.now() - startTime;
