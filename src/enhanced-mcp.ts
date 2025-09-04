@@ -20,7 +20,7 @@ import {
 
 // Core components
 import { IndexingOrchestrator } from './core/indexing/IndexingOrchestrator.js';
-import { SemanticSearchEngine } from './core/search/SemanticSearchEngine.js';
+// SemanticSearchEngine removed - not used in enhanced MCP flow
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
 
@@ -30,9 +30,7 @@ import { StandaloneCodexMcp } from './standalone-mcp-integration.js';
 // Types
 import type { 
     IndexingRequest, 
-    IndexingResult,
-    SearchRequest,
-    SearchResponse
+    IndexingResult
 } from './types/core.js';
 
 interface McpConfig {
@@ -53,7 +51,6 @@ interface SlashCommand {
 interface CommandContext {
     codebasePath?: string;
     namespace?: string;
-    lastSearchResults?: SearchResponse;
 }
 
 export class EnhancedCodexMcp {
@@ -61,7 +58,7 @@ export class EnhancedCodexMcp {
     private config: McpConfig;
     private standaloneMcp: StandaloneCodexMcp;
     private indexingOrchestrator: IndexingOrchestrator;
-    private searchEngine: SemanticSearchEngine;
+    // searchEngine removed - not used, all search goes through standaloneMcp
     private fileUtils: FileUtils;
     private logger: Logger;
     
@@ -83,10 +80,7 @@ export class EnhancedCodexMcp {
         // Initialize core components (for advanced features)
         this.indexingOrchestrator = new IndexingOrchestrator();
         
-        // Create mock dependencies for search engine (advanced features use standalone)
-        const mockVectorStore = this.createMockVectorStore();
-        const mockEmbedding = this.createMockEmbedding();
-        this.searchEngine = new SemanticSearchEngine(mockVectorStore, mockEmbedding);
+        // SearchEngine removed - all functionality handled by standaloneMcp
         
         this.server = new Server(
             {
@@ -593,49 +587,7 @@ export class EnhancedCodexMcp {
         return { command: `/search ${query}`, confidence: 0.5 };
     }
 
-    // Formatting helpers
-    private formatIndexingResult(result: IndexingResult): string {
-        return `✅ Indexing completed successfully!
-
-📊 **Results:**
-- Namespace: \`${result.namespace}\`
-- Files processed: ${result.filesProcessed}
-- Chunks created: ${result.chunksCreated}
-- Processing time: ${result.processingTimeMs}ms
-- Index type: ${result.incrementalUpdate ? 'Incremental' : 'Full'}
-
-🔍 Ready for intelligent search with \`/search <query>\``;
-    }
-
-    private formatSearchResults(results: SearchResponse): string {
-        if (results.results.length === 0) {
-            return '🔍 No results found for your query.';
-        }
-
-        let output = `🔍 **Found ${results.results.length} results:**\n\n`;
-        
-        for (const result of results.results.slice(0, 5)) {
-            output += `**${result.filePath}** (Score: ${result.score.toFixed(3)})\n`;
-            output += `\`\`\`${result.language || 'text'}\n${result.content.substring(0, 200)}...\n\`\`\`\n\n`;
-        }
-
-        if (results.results.length > 5) {
-            output += `... and ${results.results.length - 5} more results.\n`;
-        }
-
-        return output;
-    }
-
-    private formatStatusResult(stats: any): string {
-        return `📊 **Codebase Status:**
-
-- Path: \`${stats.codebasePath}\`
-- Indexed: ${stats.indexed ? '✅ Yes' : '❌ No'}
-- Namespace: \`${stats.namespace}\`
-- Last indexed: ${stats.lastIndexed}
-- Total files: ${stats.totalFiles}
-- Total chunks: ${stats.totalChunks}`;
-    }
+    // Formatting helper methods removed - unused legacy code
 
     private formatCommandHelp(command: SlashCommand): string {
         let help = `**/${command.name}** - ${command.description}\n\n`;
@@ -705,22 +657,7 @@ export class EnhancedCodexMcp {
         };
     }
 
-    // Mock implementations for testing
-    private createMockVectorStore(): any {
-        return {
-            search: async () => [],
-            searchBySymbols: async () => [],
-            getDependencyGraph: async () => null,
-            hasNamespace: async () => false
-        };
-    }
-
-    private createMockEmbedding(): any {
-        return {
-            embed: async () => [0.1, 0.2, 0.3],
-            embedBatch: async () => [[0.1, 0.2, 0.3]]
-        };
-    }
+    // Mock methods removed - no longer needed since SearchEngine was removed
 
     async run(): Promise<void> {
         this.logger.info('Starting Enhanced Intelligent Context MCP Server...');

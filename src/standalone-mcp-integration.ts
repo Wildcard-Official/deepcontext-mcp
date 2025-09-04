@@ -12,7 +12,7 @@ import { IndexingOrchestrator } from './core/indexing/IndexingOrchestrator.js';
 import { IncrementalIndexer } from './core/indexing/IncrementalIndexer.js';
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
-import { LocalMetadataStore, CodeChunkMetadata } from './storage/LocalMetadataStore.js';
+import { InMemoryMetadataStore, CodeChunkMetadata } from './storage/InMemoryMetadataStore.js';
 import { HybridSearchService } from './services/HybridSearchService.js';
 // SemanticSearchEngine removed - using HybridSearchService as primary search
 
@@ -57,7 +57,7 @@ export class StandaloneCodexMcp {
     private incrementalIndexer: IncrementalIndexer;
     private fileUtils: FileUtils;
     private logger: Logger;
-    private metadataStore: LocalMetadataStore;
+    private metadataStore: InMemoryMetadataStore;
     private hybridSearchService: HybridSearchService;
     // Removed searchEngine - standardizing on hybridSearchService
     
@@ -80,7 +80,7 @@ export class StandaloneCodexMcp {
         this.fileUtils = new FileUtils();
         this.indexingOrchestrator = new IndexingOrchestrator();
         this.incrementalIndexer = new IncrementalIndexer();
-        this.metadataStore = new LocalMetadataStore();
+        this.metadataStore = new InMemoryMetadataStore();
         
         // Create embedding integration for hybrid search
         const embedding = this.createEmbeddingIntegration();
@@ -526,7 +526,7 @@ export class StandaloneCodexMcp {
                 filePath: chunk.filePath,
                 relativePath: chunk.relativePath,
                 content: chunk.content,
-                symbols: chunk.symbols?.map(s => s.name) || [],
+                symbols: chunk.symbols || [],
                 language: chunk.language,
                 startLine: chunk.startLine,
                 endLine: chunk.endLine,

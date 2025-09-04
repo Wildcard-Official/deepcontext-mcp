@@ -14,8 +14,6 @@ export interface SearchResult {
   metadata?: {
     relativePath?: string;
     imports?: string[];
-    dependencies?: string[];
-    dependents?: string[];
   };
 }
 

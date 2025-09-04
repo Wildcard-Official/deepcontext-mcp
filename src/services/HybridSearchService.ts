@@ -4,7 +4,7 @@
  */
 
 import { Logger } from '../utils/Logger.js';
-import { LocalMetadataStore, FTSResult } from '../storage/LocalMetadataStore.js';
+import { InMemoryMetadataStore, FTSResult } from '../storage/InMemoryMetadataStore.js';
 import { SearchResult, HybridSearchOptions } from '../core/search/interfaces.js';
 
 export interface VectorSearchResult {
@@ -32,7 +32,7 @@ export class HybridSearchService {
   constructor(
     private vectorStore: VectorStore,
     private embeddingProvider: EmbeddingProvider,
-    private metadataStore: LocalMetadataStore
+    private metadataStore: InMemoryMetadataStore
   ) {}
 
   /**
@@ -205,11 +205,10 @@ export class HybridSearchService {
             startLine: metadata.startLine,
             endLine: metadata.endLine,
             language: metadata.language,
-            symbols: metadata.symbols,
+            symbols: metadata.symbols.map(s => s.name),
             metadata: {
               relativePath: metadata.relativePath,
-              imports: metadata.imports,
-              dependencies: metadata.dependencies
+              imports: metadata.imports
             }
           });
         }
@@ -255,11 +254,10 @@ export class HybridSearchService {
       startLine: result.metadata.startLine,
       endLine: result.metadata.endLine,
       language: result.metadata.language,
-      symbols: result.metadata.symbols,
+      symbols: result.metadata.symbols.map(s => s.name),
       metadata: {
         relativePath: result.metadata.relativePath,
-        imports: result.metadata.imports,
-        dependencies: result.metadata.dependencies
+        imports: result.metadata.imports
       }
     }));
   }
