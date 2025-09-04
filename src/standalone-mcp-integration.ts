@@ -61,7 +61,7 @@ export class StandaloneCodexMcp {
     private logger: Logger;
     
     // Vector store integration
-    private turbopufferApiUrl = 'https://api.turbopuffer.com/v1';
+    private turbopufferApiUrl = 'https://gcp-us-central1.turbopuffer.com/v2';
     private jinaApiUrl = 'https://api.jina.ai/v1/embeddings';
     
     // State management
@@ -139,14 +139,15 @@ export class StandaloneCodexMcp {
             await this.uploadChunksToVectorStore(result.metadata.namespace, standaloneChunks);
             
             // Store indexing metadata
+            const normalizedPath = path.resolve(codebasePath);
             const indexedCodebase: IndexedCodebase = {
-                path: codebasePath,
+                path: normalizedPath,
                 namespace: result.metadata.namespace,
                 totalChunks: standaloneChunks.length,
                 indexedAt: new Date().toISOString()
             };
             
-            this.indexedCodebases.set(codebasePath, indexedCodebase);
+            this.indexedCodebases.set(normalizedPath, indexedCodebase);
             await this.saveIndexedCodebases();
 
             const processingTime = Date.now() - startTime;
@@ -192,14 +193,16 @@ export class StandaloneCodexMcp {
             let namespace: string;
             
             if (codebasePath) {
-                const indexed = this.indexedCodebases.get(codebasePath);
+                // Normalize path for comparison
+                const normalizedPath = path.resolve(codebasePath);
+                const indexed = this.indexedCodebases.get(normalizedPath);
                 if (!indexed) {
                     return {
                         success: false,
                         results: [],
                         totalResults: 0,
                         searchTimeMs: Date.now() - startTime,
-                        message: `Codebase not indexed: ${codebasePath}`
+                        message: `Codebase not indexed. Please index ${codebasePath} first.`
                     };
                 }
                 namespace = indexed.namespace;
@@ -391,19 +394,17 @@ export class StandaloneCodexMcp {
                 batch.map(chunk => chunk.content)
             );
             
-            // Prepare upsert data
+            // Prepare upsert data in Turbopuffer v2 format
             const upsertData = batch.map((chunk, idx) => ({
                 id: chunk.id,
                 vector: embeddings[idx],
-                attributes: {
-                    content: chunk.content,
-                    filePath: chunk.filePath,
-                    relativePath: chunk.relativePath,
-                    startLine: chunk.startLine,
-                    endLine: chunk.endLine,
-                    language: chunk.language,
-                    symbols: chunk.symbols.join(',')
-                }
+                content: chunk.content,
+                filePath: chunk.filePath,
+                relativePath: chunk.relativePath,
+                startLine: chunk.startLine,
+                endLine: chunk.endLine,
+                language: chunk.language,
+                symbols: chunk.symbols.join(',')
             }));
             
             // Upload to Turbopuffer
@@ -474,7 +475,8 @@ export class StandaloneCodexMcp {
         });
         
         if (!response.ok) {
-            throw new Error(`Jina API batch error: ${response.statusText}`);
+            const error = await response.text();
+            throw new Error(`Jina API batch error (${response.status}): ${error}`);
         }
         
         const data = await response.json();
@@ -483,35 +485,35 @@ export class StandaloneCodexMcp {
 
     // Turbopuffer integration
     private async turbopufferUpsert(namespace: string, vectors: any[]): Promise<void> {
-        const response = await fetch(`${this.turbopufferApiUrl}/vectors/${namespace}/upsert`, {
+        const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${this.config.turbopufferApiKey}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                vectors,
+                upsert_rows: vectors,
                 distance_metric: 'cosine_distance'
             })
         });
         
         if (!response.ok) {
             const error = await response.text();
-            throw new Error(`Turbopuffer upsert error: ${error}`);
+            throw new Error(`Turbopuffer upsert error (${response.status}): ${error}`);
         }
     }
 
     private async turbopufferQuery(namespace: string, vector: number[], limit: number): Promise<any[]> {
-        const response = await fetch(`${this.turbopufferApiUrl}/vectors/${namespace}/query`, {
+        const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}/query`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${this.config.turbopufferApiKey}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                vector,
+                rank_by: ['vector', 'ANN', vector],
                 top_k: limit,
-                include_attributes: true
+                include_attributes: ['content', 'filePath', 'relativePath', 'startLine', 'endLine', 'language', 'symbols']
             })
         });
         
@@ -521,12 +523,12 @@ export class StandaloneCodexMcp {
         }
         
         const data = await response.json();
-        return data.result || [];
+        return data.rows || [];
     }
 
     private async clearVectorStoreNamespace(namespace: string): Promise<void> {
         try {
-            const response = await fetch(`${this.turbopufferApiUrl}/vectors/${namespace}`, {
+            const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}`, {
                 method: 'DELETE',
                 headers: {
                     'Authorization': `Bearer ${this.config.turbopufferApiKey}`
