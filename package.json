@@ -27,7 +27,7 @@
     "build": "tsc",
     "dev": "tsx watch src/enhanced-mcp.ts",
     "start": "node dist/enhanced-mcp.js",
-    "test": "tsx test/**/*.test.ts"
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.6.0"
