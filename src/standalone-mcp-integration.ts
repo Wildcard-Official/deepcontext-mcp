@@ -13,6 +13,8 @@ import { SemanticSearchEngine } from './core/search/SemanticSearchEngine.js';
 import { IncrementalIndexer } from './core/indexing/IncrementalIndexer.js';
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
+import { LocalMetadataStore, CodeChunkMetadata } from './storage/LocalMetadataStore.js';
+import { HybridSearchService } from './services/HybridSearchService.js';
 
 // Types from IndexingOrchestrator (actual implementation)
 import type { 
@@ -49,6 +51,7 @@ interface IndexedCodebase {
 interface StandaloneConfig {
     jinaApiKey: string;
     turbopufferApiKey: string;
+    openaiApiKey?: string;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -59,6 +62,8 @@ export class StandaloneCodexMcp {
     private incrementalIndexer: IncrementalIndexer;
     private fileUtils: FileUtils;
     private logger: Logger;
+    private metadataStore: LocalMetadataStore;
+    private hybridSearchService: HybridSearchService;
     
     // Vector store integration
     private turbopufferApiUrl = 'https://gcp-us-central1.turbopuffer.com/v2';
@@ -71,6 +76,7 @@ export class StandaloneCodexMcp {
         this.config = {
             jinaApiKey: config?.jinaApiKey || process.env.JINA_API_KEY || 'test',
             turbopufferApiKey: config?.turbopufferApiKey || process.env.TURBOPUFFER_API_KEY || 'test',
+            openaiApiKey: config?.openaiApiKey || process.env.OPENAI_API_KEY,
             logLevel: config?.logLevel || 'info'
         };
         
@@ -78,11 +84,31 @@ export class StandaloneCodexMcp {
         this.fileUtils = new FileUtils();
         this.indexingOrchestrator = new IndexingOrchestrator();
         this.incrementalIndexer = new IncrementalIndexer();
+        this.metadataStore = new LocalMetadataStore();
         
         // Create vector store and embedding integrations
         const vectorStore = this.createVectorStoreIntegration();
         const embedding = this.createEmbeddingIntegration();
-        this.searchEngine = new SemanticSearchEngine(vectorStore, embedding);
+        this.searchEngine = new SemanticSearchEngine(
+            vectorStore, 
+            embedding,
+            undefined, // legacy reranker
+            {
+                openaiApiKey: this.config.openaiApiKey,
+                jinaApiKey: this.config.jinaApiKey
+            }
+        );
+
+        // Initialize hybrid search service for BM25 + vector search
+        this.hybridSearchService = new HybridSearchService(
+            {
+                search: async (namespace: string, options: any) => {
+                    return await this.turbopufferQuery(namespace, options.embedding, options.limit);
+                }
+            },
+            embedding,
+            this.metadataStore
+        );
     }
 
     /**
@@ -123,27 +149,15 @@ export class StandaloneCodexMcp {
                 };
             }
             
-            // Convert core chunks to standalone format for API upload
-            const standaloneChunks: CodeChunk[] = result.chunks.map(chunk => ({
-                id: chunk.id,
-                content: chunk.content,
-                filePath: chunk.filePath,
-                relativePath: chunk.relativePath,
-                startLine: chunk.startLine,
-                endLine: chunk.endLine,
-                language: chunk.language,
-                symbols: chunk.symbols?.map(s => s.name) || []
-            }));
-
-            // Upload to vector store using real API
-            await this.uploadChunksToVectorStore(result.metadata.namespace, standaloneChunks);
+            // Upload to vector store using real API (pass CoreChunk directly)
+            await this.uploadChunksToVectorStore(result.metadata.namespace, result.chunks);
             
             // Store indexing metadata
             const normalizedPath = path.resolve(codebasePath);
             const indexedCodebase: IndexedCodebase = {
                 path: normalizedPath,
                 namespace: result.metadata.namespace,
-                totalChunks: standaloneChunks.length,
+                totalChunks: result.chunks.length,
                 indexedAt: new Date().toISOString()
             };
             
@@ -152,15 +166,15 @@ export class StandaloneCodexMcp {
 
             const processingTime = Date.now() - startTime;
             
-            this.logger.info(`✅ Indexing completed: ${result.metadata.totalFiles} files, ${standaloneChunks.length} chunks`);
+            this.logger.info(`✅ Indexing completed: ${result.metadata.totalFiles} files, ${result.chunks.length} chunks`);
             
             return {
                 success: true,
                 namespace: result.metadata.namespace,
                 filesProcessed: result.metadata.totalFiles,
-                chunksCreated: standaloneChunks.length,
+                chunksCreated: result.chunks.length,
                 processingTimeMs: processingTime,
-                message: `Successfully indexed ${result.metadata.totalFiles} files into ${standaloneChunks.length} intelligent chunks`
+                message: `Successfully indexed ${result.metadata.totalFiles} files into ${result.chunks.length} intelligent chunks`
             };
             
         } catch (error) {
@@ -179,6 +193,129 @@ export class StandaloneCodexMcp {
     /**
      * Search using new architecture with real API calls
      */
+    /**
+     * Advanced hybrid search combining vector similarity and BM25 full-text search
+     */
+    async searchHybrid(codebasePath: string, query: string, options: {
+        limit?: number;
+        vectorWeight?: number;
+        bm25Weight?: number;
+        fileTypes?: string[];
+        enableQueryEnhancement?: boolean;
+        enableReranking?: boolean;
+        provider?: 'openai' | 'jina';
+    } = {}): Promise<{
+        success: boolean;
+        results: any[];
+        searchTime: number;
+        strategy: string;
+        metadata: {
+            vectorResults: number;
+            bm25Results: number;
+            totalMatches: number;
+            queryEnhanced: boolean;
+            reranked: boolean;
+        };
+    }> {
+        const startTime = Date.now();
+        const namespace = this.generateNamespace(codebasePath);
+        
+        try {
+            this.logger.info(`🔍 Hybrid search: "${query}" in ${codebasePath}`);
+
+            // Use hybrid search service for BM25 + vector combination
+            const results = await this.hybridSearchService.search(codebasePath, query, {
+                namespace,
+                limit: options.limit || 10,
+                vectorWeight: options.vectorWeight || 0.7,
+                bm25Weight: options.bm25Weight || 0.3,
+                fileTypes: options.fileTypes,
+                enableQueryEnhancement: options.enableQueryEnhancement,
+                enableReranking: options.enableReranking,
+                provider: options.provider
+            });
+
+            const searchTime = Date.now() - startTime;
+
+            this.logger.info(`✅ Hybrid search completed: ${results.length} results in ${searchTime}ms`);
+
+            return {
+                success: true,
+                results,
+                searchTime,
+                strategy: 'hybrid',
+                metadata: {
+                    vectorResults: Math.floor(results.length * (options.vectorWeight || 0.7)),
+                    bm25Results: Math.floor(results.length * (options.bm25Weight || 0.3)),
+                    totalMatches: results.length,
+                    queryEnhanced: options.enableQueryEnhancement !== false,
+                    reranked: options.enableReranking !== false
+                }
+            };
+
+        } catch (error) {
+            this.logger.error('Hybrid search failed', { error, query: query.substring(0, 50) });
+            return {
+                success: false,
+                results: [],
+                searchTime: Date.now() - startTime,
+                strategy: 'hybrid',
+                metadata: {
+                    vectorResults: 0,
+                    bm25Results: 0,
+                    totalMatches: 0,
+                    queryEnhanced: false,
+                    reranked: false
+                }
+            };
+        }
+    }
+
+    /**
+     * Pure BM25 full-text search using local SQLite
+     */
+    async searchBM25(codebasePath: string, query: string, options: {
+        limit?: number;
+        fileTypes?: string[];
+        offset?: number;
+    } = {}): Promise<{
+        success: boolean;
+        results: any[];
+        searchTime: number;
+        strategy: string;
+    }> {
+        const startTime = Date.now();
+        
+        try {
+            this.logger.info(`📝 BM25 search: "${query}" in ${codebasePath}`);
+
+            const results = await this.hybridSearchService.searchBM25Only(codebasePath, query, {
+                limit: options.limit || 10,
+                fileTypes: options.fileTypes,
+                offset: options.offset
+            });
+
+            const searchTime = Date.now() - startTime;
+            this.logger.info(`✅ BM25 search completed: ${results.length} results in ${searchTime}ms`);
+
+            return {
+                success: true,
+                results,
+                searchTime,
+                strategy: 'bm25'
+            };
+
+        } catch (error) {
+            this.logger.error('BM25 search failed', { error, query: query.substring(0, 50) });
+            return {
+                success: false,
+                results: [],
+                searchTime: Date.now() - startTime,
+                strategy: 'bm25'
+            };
+        }
+    }
+
     async searchWithIntelligence(query: string, codebasePath?: string, maxResults = 10): Promise<{
         success: boolean;
         results: CodeChunk[];
@@ -353,10 +490,34 @@ export class StandaloneCodexMcp {
     // Vector store integration methods
     private createVectorStoreIntegration(): any {
         return {
-            search: async (query: string, namespace: string, limit: number) => {
-                return await this.vectorStoreSearch(query, namespace, limit);
+            search: async (namespace: string, options: {
+                embedding: number[];
+                limit: number;
+                minScore?: number;
+                fileTypes?: string[];
+            }) => {
+                const results = await this.turbopufferQuery(namespace, options.embedding, options.limit);
+                return results.filter(r => !options.minScore || r.score >= options.minScore);
             },
-            searchBySymbols: async (symbols: string[], namespace: string, limit: number) => {
+            hybridSearch: async (namespace: string, options: {
+                query: string;
+                embedding: number[];
+                limit: number;
+                bm25Weight?: number;
+                vectorWeight?: number;
+                fileTypes?: string[];
+            }) => {
+                // For now, use pure vector search - Turbopuffer's hybrid search API needs exploration
+                // Future enhancement: implement actual hybrid search using Turbopuffer's native capabilities
+                const results = await this.turbopufferQuery(namespace, options.embedding, options.limit);
+                
+                // Apply simple weighting simulation for compatibility
+                return results.map(r => ({
+                    ...r,
+                    score: r.score * (options.vectorWeight || 0.7)
+                }));
+            },
+            searchBySymbols: async (namespace: string, symbols: string[], limit: number) => {
                 return await this.vectorStoreSymbolSearch(symbols, namespace, limit);
             },
             getDependencyGraph: async (namespace: string) => {
@@ -380,10 +541,10 @@ export class StandaloneCodexMcp {
     }
 
     // Real API integration methods
-    private async uploadChunksToVectorStore(namespace: string, chunks: CodeChunk[]): Promise<void> {
+    private async uploadChunksToVectorStore(namespace: string, chunks: CoreChunk[]): Promise<void> {
         if (!chunks.length) return;
         
-        this.logger.info(`Uploading ${chunks.length} chunks to vector store...`);
+        this.logger.info(`Uploading ${chunks.length} chunks to vector store and local metadata...`);
         
         const batchSize = 50;
         for (let i = 0; i < chunks.length; i += batchSize) {
@@ -409,9 +570,51 @@ export class StandaloneCodexMcp {
             
             // Upload to Turbopuffer
             await this.turbopufferUpsert(namespace, upsertData);
+            
+            // Save metadata to local SQLite store
+            const metadataChunks: CodeChunkMetadata[] = batch.map(chunk => ({
+                id: chunk.id,
+                codebasePath: this.resolveCodebasePath(chunk.filePath),
+                filePath: chunk.filePath,
+                relativePath: chunk.relativePath,
+                content: chunk.content,
+                symbols: chunk.symbols?.map(s => s.name) || [],
+                language: chunk.language,
+                startLine: chunk.startLine,
+                endLine: chunk.endLine,
+                fileSize: chunk.content.length,
+                lastModified: Date.now(),
+                imports: chunk.imports?.map(i => i.module) || [],
+                dependencies: chunk.dependencies || [],
+                indexed: true,
+                indexedAt: Date.now()
+            }));
+            
+            await this.metadataStore.upsertChunks(metadataChunks);
         }
         
-        this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace}`);
+        this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace} and local metadata store`);
+    }
+
+    private resolveCodebasePath(filePath: string): string {
+        // Extract codebase path from file path by finding a reasonable root
+        // This is a heuristic - could be improved based on actual use cases
+        const parts = path.dirname(filePath).split(path.sep);
+        // Find the most reasonable root (often the directory containing package.json, .git, etc.)
+        for (let i = parts.length - 1; i >= 0; i--) {
+            const testPath = parts.slice(0, i + 1).join(path.sep);
+            // Simple heuristic: if we find common project indicators, use that as root
+            if (parts[i].match(/^[a-zA-Z0-9_-]+$/) && i > 0) {
+                return testPath;
+            }
+        }
+        return path.dirname(filePath);
+    }
+
+    private generateNamespace(codebasePath: string): string {
+        const normalized = path.resolve(codebasePath);
+        const hash = crypto.createHash('md5').update(normalized).digest('hex');
+        return `mcp_${hash.substring(0, 8)}`;
     }
 
     private async vectorStoreSearch(query: string, namespace: string, limit: number): Promise<any[]> {

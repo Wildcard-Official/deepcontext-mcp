@@ -13,7 +13,7 @@
   },
   "keywords": [
     "mcp",
-    "claude-code", 
+    "claude-code",
     "semantic-search",
     "codebase-indexing",
     "ast-parsing",
@@ -30,7 +30,9 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.6.0"
+    "@modelcontextprotocol/sdk": "^0.6.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.2.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

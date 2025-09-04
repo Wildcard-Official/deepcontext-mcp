@@ -11,6 +11,9 @@
 
 import * as crypto from 'crypto';
 import * as path from 'path';
+import { QueryEnhancer, EnhancedQuery } from '../../services/QueryEnhancer.js';
+import { ResultReranker } from '../../services/ResultReranker.js';
+import { SearchResult, HybridSearchOptions } from './interfaces.js';
 
 export interface SearchRequest {
     codebasePath: string;
@@ -20,10 +23,12 @@ export interface SearchRequest {
     minScore?: number;
     includeRelatedSymbols?: boolean;
     enableReranking?: boolean;
-    searchStrategy?: 'semantic' | 'hybrid' | 'structural';
+    enableQueryEnhancement?: boolean;
+    searchStrategy?: 'semantic' | 'hybrid' | 'bm25' | 'structural';
     fileTypes?: string[];
     symbolTypes?: string[];
     contextWindow?: number; // Lines of context around matches
+    hybridOptions?: HybridSearchOptions;
 }
 
 export interface SearchMatch {
@@ -87,6 +92,14 @@ interface VectorStore {
         minScore?: number;
         fileTypes?: string[];
     }): Promise<any[]>;
+    hybridSearch?(namespace: string, options: {
+        query: string;
+        embedding: number[];
+        limit: number;
+        bm25Weight?: number;
+        vectorWeight?: number;
+        fileTypes?: string[];
+    }): Promise<any[]>;
     searchBySymbols(namespace: string, symbols: string[], limit: number): Promise<any[]>;
     getDependencyGraph(namespace: string): Promise<any>;
     hasNamespace(namespace: string): Promise<boolean>;
@@ -102,11 +115,31 @@ interface RerankerProvider {
 }
 
 export class SemanticSearchEngine {
+    private queryEnhancer?: QueryEnhancer;
+    private resultReranker?: ResultReranker;
+
     constructor(
         private vectorStore: VectorStore,
         private embeddingProvider: EmbeddingProvider,
-        private rerankerProvider?: RerankerProvider
-    ) {}
+        private rerankerProvider?: RerankerProvider,
+        options: {
+            openaiApiKey?: string;
+            jinaApiKey?: string;
+        } = {}
+    ) {
+        // Initialize query enhancement if API keys provided
+        if (options.openaiApiKey || options.jinaApiKey) {
+            this.queryEnhancer = new QueryEnhancer(
+                options.openaiApiKey,
+                options.jinaApiKey
+            );
+        }
+
+        // Initialize reranking if Jina API key provided
+        if (options.jinaApiKey) {
+            this.resultReranker = new ResultReranker(options.jinaApiKey);
+        }
+    }
 
     /**
      * Main search method
@@ -115,7 +148,25 @@ export class SemanticSearchEngine {
         const startTime = Date.now();
         const namespace = this.generateNamespace(request.codebasePath);
 
-        console.log(`[SEARCH] 🔍 Query: "${request.query}"`);
+        let searchQuery = request.query;
+
+        // Enhance query if enabled and available
+        if (request.enableQueryEnhancement !== false && this.queryEnhancer) {
+            try {
+                const enhanced = await this.queryEnhancer.enhance(
+                    request.query, 
+                    { provider: request.hybridOptions?.provider }
+                );
+                searchQuery = enhanced.enhanced;
+                if (enhanced.enhanced !== enhanced.original) {
+                    console.log(`[SEARCH] ✨ Enhanced: "${enhanced.original}" → "${enhanced.enhanced}"`);
+                }
+            } catch (error) {
+                console.log(`[SEARCH] ⚠️ Query enhancement failed: ${error}`);
+            }
+        }
+
+        console.log(`[SEARCH] 🔍 Query: "${searchQuery}"`);
         console.log(`[SEARCH] 🎯 Strategy: ${request.searchStrategy || 'semantic'}`);
         console.log(`[SEARCH] 📋 Namespace: ${namespace}`);
 
@@ -125,7 +176,7 @@ export class SemanticSearchEngine {
         }
 
         // Analyze query intent and extract key information
-        const queryAnalysis = this.analyzeQuery(request.query);
+        const queryAnalysis = this.analyzeQuery(searchQuery);
         console.log(`[SEARCH] 🧠 Intent: ${queryAnalysis.intent}, Symbols: [${queryAnalysis.extractedSymbols.join(', ')}]`);
 
         // Execute search based on strategy
@@ -133,13 +184,16 @@ export class SemanticSearchEngine {
         
         switch (request.searchStrategy || 'semantic') {
             case 'semantic':
-                matches = await this.semanticSearch(request, namespace, queryAnalysis);
+                matches = await this.semanticSearch({ ...request, query: searchQuery }, namespace, queryAnalysis);
                 break;
             case 'hybrid':
-                matches = await this.hybridSearch(request, namespace, queryAnalysis);
+                matches = await this.hybridSearch({ ...request, query: searchQuery }, namespace, queryAnalysis);
+                break;
+            case 'bm25':
+                matches = await this.bm25Search({ ...request, query: searchQuery }, namespace, queryAnalysis);
                 break;
             case 'structural':
-                matches = await this.structuralSearch(request, namespace, queryAnalysis);
+                matches = await this.structuralSearch({ ...request, query: searchQuery }, namespace, queryAnalysis);
                 break;
         }
 
@@ -160,9 +214,14 @@ export class SemanticSearchEngine {
         }
 
         // Apply reranking if enabled
-        if (request.enableReranking !== false && this.rerankerProvider && matches.length > 1) {
-            matches = await this.rerankResults(request.query, matches);
-            console.log('[SEARCH] 🔄 Applied reranking');
+        if (request.enableReranking !== false && matches.length > 1) {
+            if (this.resultReranker) {
+                matches = await this.rerankWithService(searchQuery, matches);
+                console.log('[SEARCH] 🔄 Applied Jina reranking');
+            } else if (this.rerankerProvider) {
+                matches = await this.rerankResults(searchQuery, matches);
+                console.log('[SEARCH] 🔄 Applied legacy reranking');
+            }
         }
 
         // Identify related matches
@@ -220,18 +279,37 @@ export class SemanticSearchEngine {
     }
 
     /**
-     * Hybrid search combining semantic and structural approaches
+     * Hybrid search combining vector and BM25/full-text search
      */
     private async hybridSearch(
         request: SearchRequest,
         namespace: string,
         queryAnalysis: any
     ): Promise<SearchMatch[]> {
+        const options = request.hybridOptions || {};
+        
+        // Use Turbopuffer's native hybrid search if available
+        if (this.vectorStore.hybridSearch) {
+            const queryEmbedding = await this.embeddingProvider.embed(request.query);
+            
+            const results = await this.vectorStore.hybridSearch(namespace, {
+                query: request.query,
+                embedding: queryEmbedding,
+                limit: Math.min((request.limit || 10) * 2, 50),
+                bm25Weight: options.bm25Weight || 0.3,
+                vectorWeight: options.vectorWeight || 0.7,
+                fileTypes: request.fileTypes
+            });
+
+            return this.convertToSearchMatches(results, 'semantic');
+        }
+
+        // Fallback: combine separate vector and symbol searches
         const matches: SearchMatch[] = [];
 
         // 1. Semantic search
         const semanticMatches = await this.semanticSearch(request, namespace, queryAnalysis);
-        matches.push(...semanticMatches.map(m => ({ ...m, score: m.score * 0.7 }))); // Reduce weight
+        matches.push(...semanticMatches.map(m => ({ ...m, score: m.score * (options.vectorWeight || 0.7) })));
 
         // 2. Symbol-based search if symbols were detected
         if (queryAnalysis.extractedSymbols.length > 0) {
@@ -240,11 +318,49 @@ export class SemanticSearchEngine {
                 queryAnalysis.extractedSymbols,
                 Math.min(request.limit || 10, 20)
             );
-            matches.push(...symbolMatches.map(m => ({ ...m, score: m.score * 0.3, matchType: 'symbol' as const })));
+            matches.push(...symbolMatches.map(m => ({ ...m, score: m.score * (options.bm25Weight || 0.3), matchType: 'symbol' as const })));
         }
 
         // 3. Merge and deduplicate
         return this.mergeAndDeduplicateMatches(matches);
+    }
+
+    /**
+     * BM25/Full-text search using Turbopuffer's text search capabilities
+     */
+    private async bm25Search(
+        request: SearchRequest,
+        namespace: string,
+        queryAnalysis: any
+    ): Promise<SearchMatch[]> {
+        // If Turbopuffer supports hybrid search, use it with full BM25 weight
+        if (this.vectorStore.hybridSearch) {
+            const queryEmbedding = await this.embeddingProvider.embed(request.query);
+            
+            const results = await this.vectorStore.hybridSearch(namespace, {
+                query: request.query,
+                embedding: queryEmbedding,
+                limit: Math.min((request.limit || 10) * 2, 50),
+                bm25Weight: 1.0, // Pure BM25
+                vectorWeight: 0.0,
+                fileTypes: request.fileTypes
+            });
+
+            return this.convertToSearchMatches(results, 'exact');
+        }
+
+        // Fallback to symbol search for text-based matching
+        if (queryAnalysis.extractedSymbols.length > 0) {
+            return await this.symbolSearch(
+                namespace,
+                queryAnalysis.extractedSymbols,
+                request.limit || 10
+            );
+        }
+
+        // If no symbols detected, fall back to semantic search
+        console.log('[SEARCH] ⚠️ BM25 search not available, falling back to semantic search');
+        return await this.semanticSearch(request, namespace, queryAnalysis);
     }
 
     /**
@@ -392,7 +508,50 @@ export class SemanticSearchEngine {
     }
 
     /**
-     * Rerank results using external reranker
+     * Rerank results using Jina reranker service
+     */
+    private async rerankWithService(query: string, matches: SearchMatch[]): Promise<SearchMatch[]> {
+        if (!this.resultReranker) {
+            return matches;
+        }
+
+        try {
+            // Convert SearchMatch to SearchResult format for reranker
+            const searchResults: SearchResult[] = matches.map(match => ({
+                id: match.id,
+                content: match.content,
+                score: match.score,
+                filePath: match.filePath,
+                startLine: match.startLine,
+                endLine: match.endLine,
+                language: match.language,
+                symbols: match.symbols.map(s => s.name),
+                metadata: {
+                    relativePath: match.relativePath,
+                    imports: match.imports.map(i => i.module),
+                    dependencies: match.dependencies,
+                    dependents: match.dependents
+                }
+            }));
+
+            const reranked = await this.resultReranker.rerank(query, searchResults);
+
+            // Convert back to SearchMatch format
+            return reranked.map((result, index) => ({
+                ...matches.find(m => m.id === result.id)!,
+                originalScore: matches.find(m => m.id === result.id)!.score,
+                rerankScore: result.score,
+                score: result.score
+            }));
+
+        } catch (error) {
+            console.warn(`[SEARCH] ⚠️ Jina reranking failed: ${error}`);
+            return matches;
+        }
+    }
+
+    /**
+     * Rerank results using external reranker (legacy)
      */
     private async rerankResults(query: string, matches: SearchMatch[]): Promise<SearchMatch[]> {
         if (!this.rerankerProvider) {
@@ -411,7 +570,7 @@ export class SemanticSearchEngine {
             }));
 
         } catch (error) {
-            console.warn(`[SEARCH] ⚠️ Reranking failed: ${error}`);
+            console.warn(`[SEARCH] ⚠️ Legacy reranking failed: ${error}`);
             return matches;
         }
     }
