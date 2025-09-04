@@ -9,12 +9,12 @@ import * as crypto from 'crypto';
 
 // Core components
 import { IndexingOrchestrator } from './core/indexing/IndexingOrchestrator.js';
-import { SemanticSearchEngine } from './core/search/SemanticSearchEngine.js';
 import { IncrementalIndexer } from './core/indexing/IncrementalIndexer.js';
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
 import { LocalMetadataStore, CodeChunkMetadata } from './storage/LocalMetadataStore.js';
 import { HybridSearchService } from './services/HybridSearchService.js';
+// SemanticSearchEngine removed - using HybridSearchService as primary search
 
 // Types from IndexingOrchestrator (actual implementation)
 import type { 
@@ -23,11 +23,7 @@ import type {
     CodeChunk as CoreChunk
 } from './core/indexing/IndexingOrchestrator.js';
 
-// Types from SearchEngine
-import type {
-    SearchRequest,
-    SearchResponse
-} from './core/search/SemanticSearchEngine.js';
+// SearchEngine types removed - using HybridSearchService interfaces
 
 interface CodeChunk {
     id: string;
@@ -58,12 +54,12 @@ interface StandaloneConfig {
 export class StandaloneCodexMcp {
     private config: StandaloneConfig;
     private indexingOrchestrator: IndexingOrchestrator;
-    private searchEngine: SemanticSearchEngine;
     private incrementalIndexer: IncrementalIndexer;
     private fileUtils: FileUtils;
     private logger: Logger;
     private metadataStore: LocalMetadataStore;
     private hybridSearchService: HybridSearchService;
+    // Removed searchEngine - standardizing on hybridSearchService
     
     // Vector store integration
     private turbopufferApiUrl = 'https://gcp-us-central1.turbopuffer.com/v2';
@@ -86,20 +82,9 @@ export class StandaloneCodexMcp {
         this.incrementalIndexer = new IncrementalIndexer();
         this.metadataStore = new LocalMetadataStore();
         
-        // Create vector store and embedding integrations
-        const vectorStore = this.createVectorStoreIntegration();
+        // Create embedding integration for hybrid search
         const embedding = this.createEmbeddingIntegration();
-        // Query enhancement: OpenAI only, Reranking: Jina only
-        this.searchEngine = new SemanticSearchEngine(
-            vectorStore, 
-            embedding,
-            undefined, // legacy reranker
-            {
-                openaiApiKey: this.config.openaiApiKey, // For query enhancement
-                jinaApiKey: this.config.jinaApiKey      // For reranking
-            }
-        );
-
+        
         // Initialize hybrid search service for BM25 + vector search
         this.hybridSearchService = new HybridSearchService(
             {
@@ -357,29 +342,34 @@ export class StandaloneCodexMcp {
                 namespace = firstIndexed.namespace;
             }
 
-            // Use new architecture for search
-            const searchRequest: SearchRequest = {
-                codebasePath: codebasePath || '',
-                query,
+            // Use hybrid search service
+            const searchResult = await this.searchHybrid(codebasePath || '', query, {
                 limit: maxResults,
-                includeRelatedSymbols: true,
-                enableReranking: true,
-                searchStrategy: 'hybrid'
-            };
-
-            const searchResponse = await this.searchEngine.search(searchRequest);
+                enableQueryEnhancement: true,
+                enableReranking: true
+            });
+            
+            if (!searchResult.success) {
+                return {
+                    success: false,
+                    results: [],
+                    totalResults: 0,
+                    searchTimeMs: Date.now() - startTime,
+                    message: 'Search failed'
+                };
+            }
             
             // Convert to standalone format
-            const results: CodeChunk[] = searchResponse.matches.map(match => ({
-                id: match.id,
-                content: match.content,
-                filePath: match.filePath,
-                relativePath: match.relativePath,
-                startLine: match.startLine,
-                endLine: match.endLine,
-                language: match.language || 'unknown',
-                symbols: match.symbols?.map(s => s.name) || [],
-                score: match.score
+            const results: CodeChunk[] = searchResult.results.map((result: any) => ({
+                id: result.id,
+                content: result.content,
+                filePath: result.filePath,
+                relativePath: result.metadata?.relativePath || path.relative(codebasePath || '', result.filePath),
+                startLine: result.startLine,
+                endLine: result.endLine,
+                language: result.language || 'unknown',
+                symbols: result.symbols || [],
+                score: result.score
             }));
 
             const searchTime = Date.now() - startTime;
@@ -389,7 +379,7 @@ export class StandaloneCodexMcp {
                 results,
                 totalResults: results.length,
                 searchTimeMs: searchTime,
-                message: `Found ${results.length} relevant results`
+                message: `Found ${results.length} matches using ${searchResult.strategy} search`
             };
             
         } catch (error) {
@@ -486,47 +476,6 @@ export class StandaloneCodexMcp {
         }
     }
 
-    // Vector store integration methods
-    private createVectorStoreIntegration(): any {
-        return {
-            search: async (namespace: string, options: {
-                embedding: number[];
-                limit: number;
-                minScore?: number;
-                fileTypes?: string[];
-            }) => {
-                const results = await this.turbopufferQuery(namespace, options.embedding, options.limit);
-                return results.filter(r => !options.minScore || r.score >= options.minScore);
-            },
-            hybridSearch: async (namespace: string, options: {
-                query: string;
-                embedding: number[];
-                limit: number;
-                bm25Weight?: number;
-                vectorWeight?: number;
-                fileTypes?: string[];
-            }) => {
-                // For now, use pure vector search - Turbopuffer's hybrid search API needs exploration
-                // Future enhancement: implement actual hybrid search using Turbopuffer's native capabilities
-                const results = await this.turbopufferQuery(namespace, options.embedding, options.limit);
-                
-                // Apply simple weighting simulation for compatibility
-                return results.map(r => ({
-                    ...r,
-                    score: r.score * (options.vectorWeight || 0.7)
-                }));
-            },
-            searchBySymbols: async (namespace: string, symbols: string[], limit: number) => {
-                return await this.vectorStoreSymbolSearch(symbols, namespace, limit);
-            },
-            getDependencyGraph: async (namespace: string) => {
-                return null; // Not implemented in turbopuffer
-            },
-            hasNamespace: async (namespace: string) => {
-                return await this.checkNamespaceExists(namespace);
-            }
-        };
-    }
 
     private createEmbeddingIntegration(): any {
         return {
@@ -584,7 +533,6 @@ export class StandaloneCodexMcp {
                 fileSize: chunk.content.length,
                 lastModified: Date.now(),
                 imports: chunk.imports?.map(i => i.module) || [],
-                dependencies: chunk.dependencies || [],
                 indexed: true,
                 indexedAt: Date.now()
             }));

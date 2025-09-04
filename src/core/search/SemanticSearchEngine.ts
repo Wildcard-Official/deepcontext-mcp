@@ -21,7 +21,7 @@ export interface SearchRequest {
     explanation?: string;
     limit?: number;
     minScore?: number;
-    includeRelatedSymbols?: boolean;
+    // includeRelatedSymbols removed - Claude handles relationships natively
     enableReranking?: boolean;
     enableQueryEnhancement?: boolean;
     searchStrategy?: 'semantic' | 'hybrid' | 'bm25' | 'structural';
@@ -53,11 +53,9 @@ export interface SearchMatch {
         symbols: string[];
         line: number;
     }>;
-    dependencies: string[];
-    dependents: string[];
+    // Dependencies and relationships removed - Claude Code handles this natively
     contextBefore?: string;
     contextAfter?: string;
-    relatedMatches?: string[]; // IDs of related matches
 }
 
 export interface SearchResponse {
@@ -68,7 +66,6 @@ export interface SearchResponse {
         strategy: string;
         features: {
             semanticSearch: boolean;
-            dependencyExpansion: boolean;
             reranking: boolean;
             contextExpansion: boolean;
         };
@@ -101,7 +98,7 @@ interface VectorStore {
         fileTypes?: string[];
     }): Promise<any[]>;
     searchBySymbols(namespace: string, symbols: string[], limit: number): Promise<any[]>;
-    getDependencyGraph(namespace: string): Promise<any>;
+    // getDependencyGraph removed - Claude Code handles dependencies natively
     hasNamespace(namespace: string): Promise<boolean>;
 }
 
@@ -199,11 +196,7 @@ export class SemanticSearchEngine {
         // Apply filters
         matches = this.applyFilters(matches, request);
 
-        // Expand with dependency context if enabled
-        if (request.includeRelatedSymbols !== false && matches.length > 0) {
-            matches = await this.expandWithDependencies(matches, namespace, request.limit || 10);
-            console.log(`[SEARCH] 🔗 After dependency expansion: ${matches.length}`);
-        }
+        // Dependency expansion removed - Claude Code handles relationships natively
 
         // Add context windows if requested
         if (request.contextWindow && request.contextWindow > 0) {
@@ -221,8 +214,6 @@ export class SemanticSearchEngine {
             }
         }
 
-        // Identify related matches
-        this.identifyRelatedMatches(matches);
 
         // Sort by final score and limit results
         matches = matches
@@ -243,7 +234,6 @@ export class SemanticSearchEngine {
                 strategy: request.searchStrategy || 'semantic',
                 features: {
                     semanticSearch: true,
-                    dependencyExpansion: request.includeRelatedSymbols !== false,
                     reranking: request.enableReranking !== false && !!this.rerankerProvider,
                     contextExpansion: !!request.contextWindow
                 },
@@ -400,64 +390,7 @@ export class SemanticSearchEngine {
         return this.convertToSearchMatches(results, 'symbol');
     }
 
-    /**
-     * Expand results with dependency context
-     */
-    private async expandWithDependencies(
-        matches: SearchMatch[],
-        namespace: string,
-        targetLimit: number
-    ): Promise<SearchMatch[]> {
-        try {
-            const dependencyGraph = await this.vectorStore.getDependencyGraph(namespace);
-            if (!dependencyGraph) {
-                return matches;
-            }
-
-            // Extract symbols from current matches
-            const currentSymbols = new Set<string>();
-            for (const match of matches) {
-                match.symbols.forEach(s => currentSymbols.add(s.name));
-            }
-
-            // Find related symbols
-            const relatedSymbols = this.findRelatedSymbols(currentSymbols, dependencyGraph);
-            
-            if (relatedSymbols.size === 0) {
-                return matches;
-            }
-
-            console.log(`[SEARCH] 🔗 Found ${relatedSymbols.size} related symbols`);
-
-            // Search for chunks containing related symbols
-            const relatedMatches = await this.symbolSearch(
-                namespace,
-                Array.from(relatedSymbols),
-                targetLimit - matches.length
-            );
-
-            // Merge with existing matches
-            const allMatches = [...matches];
-            const existingIds = new Set(matches.map(m => m.id));
-
-            for (const match of relatedMatches) {
-                if (!existingIds.has(match.id) && allMatches.length < targetLimit) {
-                    // Boost score for dependency-related matches but cap it
-                    allMatches.push({
-                        ...match,
-                        score: Math.min(match.score * 1.1, 0.95),
-                        matchType: 'dependency'
-                    });
-                }
-            }
-
-            return allMatches;
-
-        } catch (error) {
-            console.warn(`[SEARCH] ⚠️ Dependency expansion failed: ${error}`);
-            return matches;
-        }
-    }
+    // expandWithDependencies method removed - Claude Code handles dependencies natively
 
     /**
      * Apply filters to search results
@@ -525,9 +458,7 @@ export class SemanticSearchEngine {
                 symbols: match.symbols.map(s => s.name),
                 metadata: {
                     relativePath: match.relativePath,
-                    imports: match.imports.map(i => i.module),
-                    dependencies: match.dependencies,
-                    dependents: match.dependents
+                    imports: match.imports.map(i => i.module)
                 }
             }));
 
@@ -647,31 +578,7 @@ export class SemanticSearchEngine {
         }));
     }
 
-    /**
-     * Find related symbols from dependency graph
-     */
-    private findRelatedSymbols(
-        currentSymbols: Set<string>,
-        dependencyGraph: any
-    ): Set<string> {
-        const related = new Set<string>();
-
-        if (dependencyGraph && dependencyGraph.edges) {
-            for (const edge of dependencyGraph.edges) {
-                if (currentSymbols.has(edge.source)) {
-                    related.add(edge.target);
-                }
-                if (currentSymbols.has(edge.target)) {
-                    related.add(edge.source);
-                }
-            }
-        }
-
-        // Remove symbols we already have
-        currentSymbols.forEach(symbol => related.delete(symbol));
-
-        return related;
-    }
+    // findRelatedSymbols method removed - Claude Code handles symbol relationships natively
 
     /**
      * Merge and deduplicate matches from different search strategies
@@ -692,35 +599,6 @@ export class SemanticSearchEngine {
         return Array.from(seen.values());
     }
 
-    /**
-     * Identify relationships between matches
-     */
-    private identifyRelatedMatches(matches: SearchMatch[]): void {
-        for (let i = 0; i < matches.length; i++) {
-            const match = matches[i];
-            match.relatedMatches = [];
-
-            for (let j = 0; j < matches.length; j++) {
-                if (i === j) continue;
-                
-                const other = matches[j];
-                
-                // Check if they share symbols, dependencies, or are in related files
-                const hasSharedSymbols = match.symbols.some(s1 =>
-                    other.symbols.some(s2 => s1.name === s2.name)
-                );
-                
-                const hasSharedDependencies = match.dependencies.some(dep =>
-                    other.dependencies.includes(dep) || 
-                    other.dependents.includes(dep)
-                );
-
-                if (hasSharedSymbols || hasSharedDependencies) {
-                    match.relatedMatches!.push(other.id);
-                }
-            }
-        }
-    }
 
     /**
      * Generate search suggestions

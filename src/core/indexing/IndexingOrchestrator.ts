@@ -47,8 +47,7 @@ export interface CodeChunk {
         symbols: string[];
         line: number;
     }>;
-    dependencies: string[];  // Files this chunk depends on
-    dependents: string[];    // Files that depend on this chunk
+    // Dependencies removed - Claude Code handles this natively
 }
 
 export interface IndexingResult {
@@ -158,13 +157,7 @@ export class IndexingOrchestrator {
                 console.log(`[INDEXING] 📊 Processed: ${Math.min(i + batchSize, filesToUpdate.length)}/${filesToUpdate.length} files`);
             }
 
-            // Step 6: Build cross-file dependencies if enabled
-            if (request.enableDependencyAnalysis !== false && chunks.length > 0) {
-                console.log('[INDEXING] 🔗 Building dependency graph...');
-                await this.buildDependencyRelationships(chunks);
-            }
-
-            // Step 7: Update incremental index metadata
+            // Step 6: Update incremental index metadata
             if (indexingMethod === 'incremental') {
                 await this.incrementalIndexer.updateIndexMetadata(
                     request.codebasePath,
@@ -288,9 +281,7 @@ export class IndexingOrchestrator {
                 symbols: group.symbols,
                 imports: symbolAnalysis.imports.filter((imp: any) => 
                     imp.line >= group.startLine && imp.line <= group.endLine
-                ),
-                dependencies: [], // Will be filled by buildDependencyRelationships
-                dependents: []    // Will be filled by buildDependencyRelationships
+                )
             });
         }
 
@@ -385,50 +376,6 @@ export class IndexingOrchestrator {
         return filtered;
     }
 
-    private async buildDependencyRelationships(chunks: CodeChunk[]): Promise<void> {
-        // Build a map of exports to files
-        const exportMap = new Map<string, CodeChunk>();
-        const importMap = new Map<string, CodeChunk[]>();
-
-        for (const chunk of chunks) {
-            // Map exports
-            chunk.symbols.forEach(symbol => {
-                if (symbol.scope === 'export' || symbol.type === 'function' || symbol.type === 'class') {
-                    exportMap.set(symbol.name, chunk);
-                }
-            });
-
-            // Map imports
-            chunk.imports.forEach(imp => {
-                imp.symbols.forEach(symbol => {
-                    if (!importMap.has(symbol)) {
-                        importMap.set(symbol, []);
-                    }
-                    importMap.get(symbol)!.push(chunk);
-                });
-            });
-        }
-
-        // Build relationships
-        for (const chunk of chunks) {
-            chunk.imports.forEach(imp => {
-                imp.symbols.forEach(importedSymbol => {
-                    const exportingChunk = exportMap.get(importedSymbol);
-                    if (exportingChunk && exportingChunk !== chunk) {
-                        // This chunk depends on the exporting chunk
-                        if (!chunk.dependencies.includes(exportingChunk.filePath)) {
-                            chunk.dependencies.push(exportingChunk.filePath);
-                        }
-                        
-                        // The exporting chunk has this chunk as a dependent
-                        if (!exportingChunk.dependents.includes(chunk.filePath)) {
-                            exportingChunk.dependents.push(chunk.filePath);
-                        }
-                    }
-                });
-            });
-        }
-    }
 
     private createNoUpdateResult(request: IndexingRequest, startTime: number): IndexingResult {
         return {
