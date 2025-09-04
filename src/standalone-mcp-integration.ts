@@ -624,7 +624,13 @@ export class StandaloneCodexMcp {
             },
             body: JSON.stringify({
                 upsert_rows: vectors,
-                distance_metric: 'cosine_distance'
+                distance_metric: 'cosine_distance',
+                schema: {
+                    content: {
+                        type: 'string',
+                        full_text_search: true
+                    }
+                }
             })
         });
         

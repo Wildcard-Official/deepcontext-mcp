@@ -133,12 +133,10 @@ export class HybridSearchService {
     });
 
     try {
-      // BM25 search temporarily disabled - need proper schema configuration
-      // Fallback to vector search for now
-      const embedding = await this.embeddingProvider.embed(query);
+      // Use Turbopuffer's native BM25 search without vector component
       const results = await this.turbopuffer.search(namespace, {
-        embedding,
-        rank_by: ["vector", "ANN", embedding],
+        query,
+        rank_by: ["content", "BM25", query],
         limit
       });
 
