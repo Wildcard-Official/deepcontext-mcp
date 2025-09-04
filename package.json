@@ -1,0 +1,47 @@
+{
+  "name": "@wildcard-corp/intelligent-context-mcp",
+  "version": "1.0.0",
+  "description": "Advanced codebase indexing and semantic search MCP server with dependency graph analysis for Claude Code",
+  "main": "dist/enhanced-mcp.js",
+  "type": "module",
+  "bin": {
+    "intelligent-context-mcp": "dist/enhanced-mcp.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wildcard-Official/intelligent-context-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "claude-code", 
+    "semantic-search",
+    "codebase-indexing",
+    "ast-parsing",
+    "vector-search",
+    "jina-ai",
+    "turbopuffer"
+  ],
+  "author": "Wildcard Corporation",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/enhanced-mcp.ts",
+    "start": "node dist/enhanced-mcp.js",
+    "test": "tsx test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.11.0",
+    "typescript": "^5.4.5"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

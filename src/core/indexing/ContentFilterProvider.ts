@@ -1,0 +1,469 @@
+/**
+ * ContentFilterProvider - Intelligent content filtering for code indexing
+ * 
+ * Filters out noise to improve search quality:
+ * - Test files with mock data
+ * - Generated/compiled code
+ * - Configuration files 
+ * - Low-quality content (minified, large data files)
+ * - Binary and media files
+ */
+
+export interface FilterResult {
+    include: boolean;
+    reason: string;
+    confidence: number;
+}
+
+export class ContentFilterProvider {
+    private readonly TEST_FILE_PATTERNS = [
+        // JavaScript/TypeScript test patterns
+        /\.(test|spec|tests)\.[jt]sx?$/,
+        /__tests__\//,
+        /\/tests?\//,
+        /\/spec\//,
+        /\.stories\.[jt]sx?$/, // Storybook stories
+        
+        // Python test patterns
+        /test_.*\.py$/,
+        /.*_test\.py$/,
+        /conftest\.py$/,
+        /\/tests?\//,
+        
+        // Java test patterns
+        /.*Test\.java$/,
+        /.*Tests\.java$/,
+        /\/test\//,
+        
+        // Go test patterns
+        /.*_test\.go$/,
+        
+        // Rust test patterns
+        /\/tests?\//,
+        
+        // General test directory patterns
+        /\/(test|tests|spec|specs|__tests__)\/.*$/
+    ];
+
+    private readonly GENERATED_FILE_PATTERNS = [
+        // Build outputs
+        /\/dist\//,
+        /\/build\//,
+        /\/out\//,
+        /\/target\//,
+        /\/bin\//,
+        /\/obj\//,
+        
+        // Generated code markers
+        /\.generated\./,
+        /\.gen\./,
+        /_generated\./,
+        /\.min\.[jt]s$/,
+        /\.bundle\.[jt]s$/,
+        
+        // Source maps
+        /\.map$/,
+        
+        // Compiled files
+        /\.d\.ts$/,  // TypeScript declarations (unless they're hand-written)
+        /\.pyc$/,
+        /\.pyo$/,
+        /\.class$/,
+        /\.o$/,
+        /\.obj$/,
+        /\.exe$/,
+        /\.dll$/,
+        /\.so$/,
+        /\.dylib$/,
+        
+        // Generated documentation
+        /\/docs?\/build\//,
+        /\/docs?\/_build\//
+    ];
+
+    private readonly CONFIG_FILE_PATTERNS = [
+        // Package managers
+        /^package\.json$/,
+        /^package-lock\.json$/,
+        /^yarn\.lock$/,
+        /^pnpm-lock\.yaml$/,
+        /^Cargo\.lock$/,
+        /^Pipfile\.lock$/,
+        /^poetry\.lock$/,
+        /^composer\.lock$/,
+        
+        // Build tools
+        /^webpack\.config\.[jt]s$/,
+        /^rollup\.config\.[jt]s$/,
+        /^vite\.config\.[jt]s$/,
+        /^babel\.config\.[jt]s$/,
+        /^jest\.config\.[jt]s$/,
+        
+        // Linters and formatters
+        /^\.eslintrc/,
+        /^\.prettierrc/,
+        /^\.editorconfig$/,
+        /^\.gitignore$/,
+        /^\.gitattributes$/,
+        /^\.dockerignore$/,
+        
+        // IDE files
+        /^\.vscode\//,
+        /^\.idea\//,
+        /\.iml$/,
+        
+        // CI/CD
+        /^\.github\//,
+        /^\.gitlab-ci\.yml$/,
+        /^\.travis\.yml$/,
+        /^appveyor\.yml$/,
+        /^azure-pipelines\.yml$/,
+        
+        // Environment
+        /^\.env/,
+        /^\.env\./,
+        
+        // Docker
+        /^Dockerfile/,
+        /^docker-compose/
+    ];
+
+    private readonly LOW_QUALITY_INDICATORS = [
+        // Minified code indicators
+        { pattern: /^.{200,}$/, reason: 'Very long lines (likely minified)' },
+        { pattern: /[a-zA-Z]{50,}/, reason: 'Very long identifiers (likely obfuscated)' },
+        { pattern: /\w{1,2}=function\(\w{1,2}\)/, reason: 'Minified function patterns' },
+        
+        // Generated code markers
+        { pattern: /This file was generated/, reason: 'Contains generation marker' },
+        { pattern: /DO NOT EDIT/, reason: 'Contains do-not-edit warning' },
+        { pattern: /Auto-generated/, reason: 'Contains auto-generation marker' },
+        { pattern: /Generated on \d{4}-\d{2}-\d{2}/, reason: 'Contains generation timestamp' },
+        
+        // Large data/JSON files
+        { pattern: /^\s*[\[{]/, reason: 'Starts with JSON/data structure', minSize: 10000 }
+    ];
+
+    private readonly CONTENT_QUALITY_CHECKS = [
+        // Code density checks
+        { 
+            check: (content: string) => this.calculateCommentRatio(content) > 0.8,
+            reason: 'Mostly comments (documentation file)',
+            shouldInclude: false
+        },
+        {
+            check: (content: string) => this.calculateWhitespaceRatio(content) > 0.6,
+            reason: 'Mostly whitespace (formatting file)',
+            shouldInclude: false
+        },
+        {
+            check: (content: string) => this.hasRepeatedPatterns(content),
+            reason: 'Contains repeated patterns (likely generated)',
+            shouldInclude: false
+        },
+        {
+            check: (content: string) => this.isLikelyDataFile(content),
+            reason: 'Appears to be data/configuration content',
+            shouldInclude: false
+        }
+    ];
+
+    /**
+     * Determine if a file should be included in indexing
+     */
+    shouldInclude(relativePath: string, content: string): FilterResult {
+        const fileName = relativePath.split('/').pop() || '';
+        
+        // Check test files
+        if (this.isTestFile(relativePath)) {
+            return {
+                include: false,
+                reason: 'Test file',
+                confidence: 0.9
+            };
+        }
+
+        // Check generated files
+        if (this.isGeneratedFile(relativePath)) {
+            return {
+                include: false,
+                reason: 'Generated file',
+                confidence: 0.95
+            };
+        }
+
+        // Check config files (most should be excluded, but some are valuable)
+        const configCheck = this.checkConfigFile(relativePath, fileName);
+        if (!configCheck.include) {
+            return configCheck;
+        }
+
+        // Check content quality
+        const qualityCheck = this.checkContentQuality(content, relativePath);
+        if (!qualityCheck.include) {
+            return qualityCheck;
+        }
+
+        // Check for binary content
+        if (this.isBinaryContent(content)) {
+            return {
+                include: false,
+                reason: 'Binary content',
+                confidence: 1.0
+            };
+        }
+
+        // File passes all filters
+        return {
+            include: true,
+            reason: 'Source code file',
+            confidence: 0.8
+        };
+    }
+
+    /**
+     * Check if file is a test file
+     */
+    private isTestFile(relativePath: string): boolean {
+        const lowerPath = relativePath.toLowerCase();
+        return this.TEST_FILE_PATTERNS.some(pattern => pattern.test(lowerPath));
+    }
+
+    /**
+     * Check if file is generated
+     */
+    private isGeneratedFile(relativePath: string): boolean {
+        const lowerPath = relativePath.toLowerCase();
+        return this.GENERATED_FILE_PATTERNS.some(pattern => pattern.test(lowerPath));
+    }
+
+    /**
+     * Check configuration files (some are valuable, some are not)
+     */
+    private checkConfigFile(relativePath: string, fileName: string): FilterResult {
+        const lowerPath = relativePath.toLowerCase();
+        const lowerFileName = fileName.toLowerCase();
+
+        // High-value config files that contain business logic
+        const valuableConfigs = [
+            /webpack\.config\.[jt]s$/,
+            /rollup\.config\.[jt]s$/,
+            /vite\.config\.[jt]s$/,
+            /next\.config\.[jt]s$/,
+            /nuxt\.config\.[jt]s$/,
+            /gatsby-config\.[jt]s$/,
+            /tailwind\.config\.[jt]s$/
+        ];
+
+        if (valuableConfigs.some(pattern => pattern.test(lowerFileName))) {
+            return {
+                include: true,
+                reason: 'Valuable configuration file',
+                confidence: 0.7
+            };
+        }
+
+        // Standard config files to exclude
+        if (this.CONFIG_FILE_PATTERNS.some(pattern => pattern.test(lowerPath) || pattern.test(lowerFileName))) {
+            return {
+                include: false,
+                reason: 'Configuration file',
+                confidence: 0.85
+            };
+        }
+
+        return {
+            include: true,
+            reason: 'Not a config file',
+            confidence: 1.0
+        };
+    }
+
+    /**
+     * Check content quality
+     */
+    private checkContentQuality(content: string, relativePath: string): FilterResult {
+        // Check file size (very large files are often data files)
+        if (content.length > 500000) { // 500KB
+            return {
+                include: false,
+                reason: 'File too large (likely data file)',
+                confidence: 0.9
+            };
+        }
+
+        // Check for low quality indicators
+        for (const indicator of this.LOW_QUALITY_INDICATORS) {
+            if (indicator.minSize && content.length < indicator.minSize) {
+                continue;
+            }
+            
+            if (indicator.pattern.test(content)) {
+                return {
+                    include: false,
+                    reason: indicator.reason,
+                    confidence: 0.8
+                };
+            }
+        }
+
+        // Run content quality checks
+        for (const qualityCheck of this.CONTENT_QUALITY_CHECKS) {
+            if (qualityCheck.check(content)) {
+                return {
+                    include: qualityCheck.shouldInclude,
+                    reason: qualityCheck.reason,
+                    confidence: 0.75
+                };
+            }
+        }
+
+        return {
+            include: true,
+            reason: 'Good quality content',
+            confidence: 0.8
+        };
+    }
+
+    /**
+     * Check if content appears to be binary
+     */
+    private isBinaryContent(content: string): boolean {
+        // Check for null bytes (strong binary indicator)
+        if (content.includes('\0')) {
+            return true;
+        }
+
+        // Check for high ratio of non-printable characters
+        let nonPrintable = 0;
+        const sampleSize = Math.min(content.length, 1000);
+        
+        for (let i = 0; i < sampleSize; i++) {
+            const code = content.charCodeAt(i);
+            if (code < 32 && code !== 9 && code !== 10 && code !== 13) { // Not tab, LF, or CR
+                nonPrintable++;
+            }
+        }
+
+        return nonPrintable / sampleSize > 0.1; // More than 10% non-printable
+    }
+
+    /**
+     * Calculate ratio of comments to code
+     */
+    private calculateCommentRatio(content: string): number {
+        const lines = content.split('\n');
+        let commentLines = 0;
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('//') || 
+                trimmed.startsWith('#') || 
+                trimmed.startsWith('/*') || 
+                trimmed.startsWith('*') ||
+                trimmed.startsWith('<!--')) {
+                commentLines++;
+            }
+        }
+
+        return lines.length > 0 ? commentLines / lines.length : 0;
+    }
+
+    /**
+     * Calculate ratio of whitespace to content
+     */
+    private calculateWhitespaceRatio(content: string): number {
+        const totalChars = content.length;
+        if (totalChars === 0) return 0;
+        
+        const whitespaceChars = (content.match(/\s/g) || []).length;
+        return whitespaceChars / totalChars;
+    }
+
+    /**
+     * Check for repeated patterns (generated code indicator)
+     */
+    private hasRepeatedPatterns(content: string): boolean {
+        const lines = content.split('\n');
+        if (lines.length < 20) return false;
+
+        // Look for repeated identical lines
+        const lineFreq = new Map<string, number>();
+        let nonEmptyLines = 0;
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.length > 0) {
+                nonEmptyLines++;
+                lineFreq.set(trimmed, (lineFreq.get(trimmed) || 0) + 1);
+            }
+        }
+
+        // If any line appears more than 20% of the time, likely generated
+        for (const count of lineFreq.values()) {
+            if (count / nonEmptyLines > 0.2 && count > 10) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if content looks like a data file
+     */
+    private isLikelyDataFile(content: string): boolean {
+        const trimmed = content.trim();
+        
+        // Large JSON files
+        if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+            (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+            
+            // Count code-like patterns
+            const codePatterns = [
+                /function\s*\(/,
+                /class\s+\w+/,
+                /import\s+/,
+                /export\s+/,
+                /const\s+\w+\s*=/,
+                /let\s+\w+\s*=/,
+                /var\s+\w+\s*=/
+            ];
+            
+            const hasCodePatterns = codePatterns.some(pattern => pattern.test(content));
+            
+            // If it's JSON-like but has no code patterns, likely data
+            return !hasCodePatterns && content.length > 5000;
+        }
+
+        // CSV-like content
+        if (content.includes(',') && content.split('\n').length > 50) {
+            const lines = content.split('\n').slice(0, 10);
+            const commaCount = lines.reduce((sum, line) => sum + (line.match(/,/g) || []).length, 0);
+            
+            // High comma density suggests CSV
+            if (commaCount > lines.length * 3) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get filtering statistics
+     */
+    getFilteringStats(): {
+        testPatterns: number;
+        generatedPatterns: number;
+        configPatterns: number;
+        qualityChecks: number;
+    } {
+        return {
+            testPatterns: this.TEST_FILE_PATTERNS.length,
+            generatedPatterns: this.GENERATED_FILE_PATTERNS.length,
+            configPatterns: this.CONFIG_FILE_PATTERNS.length,
+            qualityChecks: this.CONTENT_QUALITY_CHECKS.length
+        };
+    }
+}
