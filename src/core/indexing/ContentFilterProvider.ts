@@ -196,6 +196,8 @@ export class ContentFilterProvider {
         const configCheck = this.checkConfigFile(relativePath, fileName);
         if (!configCheck.include) {
             return configCheck;
+        } else if (configCheck.reason === 'Valuable configuration file') {
+            return configCheck; // Return valuable config result immediately
         }
 
         // Check content quality
