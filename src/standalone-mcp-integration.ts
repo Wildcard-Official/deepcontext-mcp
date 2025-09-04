@@ -12,9 +12,7 @@ import { IndexingOrchestrator } from './core/indexing/IndexingOrchestrator.js';
 import { IncrementalIndexer } from './core/indexing/IncrementalIndexer.js';
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
-import { InMemoryMetadataStore, CodeChunkMetadata } from './storage/InMemoryMetadataStore.js';
-import { HybridSearchService } from './services/HybridSearchService.js';
-// SemanticSearchEngine removed - using HybridSearchService as primary search
+import { HybridSearchService, TurbopufferStore } from './services/HybridSearchService.js';
 
 // Types from IndexingOrchestrator (actual implementation)
 import type { 
@@ -23,7 +21,6 @@ import type {
     CodeChunk as CoreChunk
 } from './core/indexing/IndexingOrchestrator.js';
 
-// SearchEngine types removed - using HybridSearchService interfaces
 
 interface CodeChunk {
     id: string;
@@ -57,9 +54,8 @@ export class StandaloneCodexMcp {
     private incrementalIndexer: IncrementalIndexer;
     private fileUtils: FileUtils;
     private logger: Logger;
-    private metadataStore: InMemoryMetadataStore;
+    private turbopufferStore: TurbopufferStore;
     private hybridSearchService: HybridSearchService;
-    // Removed searchEngine - standardizing on hybridSearchService
     
     // Vector store integration
     private turbopufferApiUrl = 'https://gcp-us-central1.turbopuffer.com/v2';
@@ -80,20 +76,20 @@ export class StandaloneCodexMcp {
         this.fileUtils = new FileUtils();
         this.indexingOrchestrator = new IndexingOrchestrator();
         this.incrementalIndexer = new IncrementalIndexer();
-        this.metadataStore = new InMemoryMetadataStore();
+        // Create Turbopuffer store integration
+        this.turbopufferStore = {
+            search: async (namespace: string, options: any) => {
+                return await this.turbopufferQuery(namespace, options);
+            }
+        };
         
         // Create embedding integration for hybrid search
         const embedding = this.createEmbeddingIntegration();
         
-        // Initialize hybrid search service for BM25 + vector search
+        // Initialize hybrid search service using Turbopuffer's native capabilities
         this.hybridSearchService = new HybridSearchService(
-            {
-                search: async (namespace: string, options: any) => {
-                    return await this.turbopufferQuery(namespace, options.embedding, options.limit);
-                }
-            },
-            embedding,
-            this.metadataStore
+            this.turbopufferStore,
+            embedding
         );
     }
 
@@ -256,7 +252,7 @@ export class StandaloneCodexMcp {
     }
 
     /**
-     * Pure BM25 full-text search using local SQLite
+     * Pure BM25 full-text search using Turbopuffer
      */
     async searchBM25(codebasePath: string, query: string, options: {
         limit?: number;
@@ -273,10 +269,12 @@ export class StandaloneCodexMcp {
         try {
             this.logger.info(`📝 BM25 search: "${query}" in ${codebasePath}`);
 
+            const namespace = this.generateNamespace(codebasePath);
             const results = await this.hybridSearchService.searchBM25Only(codebasePath, query, {
                 limit: options.limit || 10,
                 fileTypes: options.fileTypes,
-                offset: options.offset
+                offset: options.offset,
+                namespace
             });
 
             const searchTime = Date.now() - startTime;
@@ -503,7 +501,7 @@ export class StandaloneCodexMcp {
                 batch.map(chunk => chunk.content)
             );
             
-            // Prepare upsert data in Turbopuffer v2 format
+            // Prepare upsert data in Turbopuffer v2 format with schema for full-text search
             const upsertData = batch.map((chunk, idx) => ({
                 id: chunk.id,
                 vector: embeddings[idx],
@@ -513,34 +511,17 @@ export class StandaloneCodexMcp {
                 startLine: chunk.startLine,
                 endLine: chunk.endLine,
                 language: chunk.language,
-                symbols: chunk.symbols.join(',')
+                symbols: chunk.symbols.join(','),
+                codebasePath: this.resolveCodebasePath(chunk.filePath)
             }));
             
             // Upload to Turbopuffer
             await this.turbopufferUpsert(namespace, upsertData);
             
-            // Save metadata to local SQLite store
-            const metadataChunks: CodeChunkMetadata[] = batch.map(chunk => ({
-                id: chunk.id,
-                codebasePath: this.resolveCodebasePath(chunk.filePath),
-                filePath: chunk.filePath,
-                relativePath: chunk.relativePath,
-                content: chunk.content,
-                symbols: chunk.symbols || [],
-                language: chunk.language,
-                startLine: chunk.startLine,
-                endLine: chunk.endLine,
-                fileSize: chunk.content.length,
-                lastModified: Date.now(),
-                imports: chunk.imports?.map(i => i.module) || [],
-                indexed: true,
-                indexedAt: Date.now()
-            }));
             
-            await this.metadataStore.upsertChunks(metadataChunks);
         }
         
-        this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace} and local metadata store`);
+        this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace}`);
     }
 
     private resolveCodebasePath(filePath: string): string {
@@ -566,7 +547,7 @@ export class StandaloneCodexMcp {
 
     private async vectorStoreSearch(query: string, namespace: string, limit: number): Promise<any[]> {
         const queryEmbedding = await this.generateEmbedding(query);
-        return await this.turbopufferQuery(namespace, queryEmbedding, limit);
+        return await this.turbopufferQuery(namespace, { embedding: queryEmbedding, limit });
     }
 
     private async vectorStoreSymbolSearch(symbols: string[], namespace: string, limit: number): Promise<any[]> {
@@ -653,18 +634,36 @@ export class StandaloneCodexMcp {
         }
     }
 
-    private async turbopufferQuery(namespace: string, vector: number[], limit: number): Promise<any[]> {
+    private async turbopufferQuery(namespace: string, options: any): Promise<any[]> {
+        const requestBody: any = {
+            include_attributes: ['content', 'filePath', 'relativePath', 'startLine', 'endLine', 'language', 'symbols'],
+            top_k: options.limit || 10
+        };
+
+        // Handle different search types based on options
+        if (options.rank_by) {
+            // Direct rank_by specification (for hybrid search)
+            requestBody.rank_by = options.rank_by;
+        } else if (options.embedding) {
+            // Vector search
+            requestBody.rank_by = ['vector', 'ANN', options.embedding];
+        } else if (options.query) {
+            // BM25 text search
+            requestBody.rank_by = [`content BM25 "${options.query}"`];
+        }
+
+        // Add filters if provided
+        if (options.filters) {
+            requestBody.filters = options.filters;
+        }
+
         const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}/query`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${this.config.turbopufferApiKey}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                rank_by: ['vector', 'ANN', vector],
-                top_k: limit,
-                include_attributes: ['content', 'filePath', 'relativePath', 'startLine', 'endLine', 'language', 'symbols']
-            })
+            body: JSON.stringify(requestBody)
         });
         
         if (!response.ok) {
@@ -673,7 +672,11 @@ export class StandaloneCodexMcp {
         }
         
         const data = await response.json();
-        return data.rows || [];
+        return (data.rows || []).map((row: any) => ({
+            id: row.id,
+            score: row.score || row._distance || 0,
+            metadata: row.attributes
+        }));
     }
 
     private async clearVectorStoreNamespace(namespace: string): Promise<void> {

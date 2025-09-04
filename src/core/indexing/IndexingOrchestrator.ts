@@ -47,7 +47,6 @@ export interface CodeChunk {
         symbols: string[];
         line: number;
     }>;
-    // Dependencies removed - Claude Code handles this natively
 }
 
 export interface IndexingResult {

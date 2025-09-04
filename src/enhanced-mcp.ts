@@ -20,7 +20,6 @@ import {
 
 // Core components
 import { IndexingOrchestrator } from './core/indexing/IndexingOrchestrator.js';
-// SemanticSearchEngine removed - not used in enhanced MCP flow
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
 
@@ -58,7 +57,6 @@ export class EnhancedCodexMcp {
     private config: McpConfig;
     private standaloneMcp: StandaloneCodexMcp;
     private indexingOrchestrator: IndexingOrchestrator;
-    // searchEngine removed - not used, all search goes through standaloneMcp
     private fileUtils: FileUtils;
     private logger: Logger;
     
@@ -80,7 +78,6 @@ export class EnhancedCodexMcp {
         // Initialize core components (for advanced features)
         this.indexingOrchestrator = new IndexingOrchestrator();
         
-        // SearchEngine removed - all functionality handled by standaloneMcp
         
         this.server = new Server(
             {
@@ -587,8 +584,6 @@ export class EnhancedCodexMcp {
         return { command: `/search ${query}`, confidence: 0.5 };
     }
 
-    // Formatting helper methods removed - unused legacy code
-
     private formatCommandHelp(command: SlashCommand): string {
         let help = `**/${command.name}** - ${command.description}\n\n`;
         
@@ -657,7 +652,6 @@ export class EnhancedCodexMcp {
         };
     }
 
-    // Mock methods removed - no longer needed since SearchEngine was removed
 
     async run(): Promise<void> {
         this.logger.info('Starting Enhanced Intelligent Context MCP Server...');

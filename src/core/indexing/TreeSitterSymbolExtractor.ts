@@ -664,19 +664,18 @@ export class TreeSitterSymbolExtractor {
 
     // Tree-sitter initialization methods (simplified for now)
     private async initializeTypeScript(): Promise<void> {
-        // In a real implementation, this would load tree-sitter-typescript
-        // For now, we'll skip Tree-sitter and rely on regex
-        console.log('[SYMBOL-EXTRACTOR] TypeScript parser would be loaded here');
+        // Tree-sitter parsers would be initialized here in a full implementation
+        // Currently falling back to regex-based extraction
     }
 
     private async initializeJavaScript(): Promise<void> {
-        // In a real implementation, this would load tree-sitter-javascript
-        console.log('[SYMBOL-EXTRACTOR] JavaScript parser would be loaded here');
+        // Tree-sitter parsers would be initialized here in a full implementation
+        // Currently falling back to regex-based extraction
     }
 
     private async initializePython(): Promise<void> {
-        // In a real implementation, this would load tree-sitter-python
-        console.log('[SYMBOL-EXTRACTOR] Python parser would be loaded here');
+        // Tree-sitter parsers would be initialized here in a full implementation
+        // Currently falling back to regex-based extraction
     }
 
     private async processCapture(
