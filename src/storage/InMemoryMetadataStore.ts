@@ -239,7 +239,8 @@ export class InMemoryMetadataStore {
       if (!docIds) continue;
       
       const df = this.termDocumentFreq.get(term) || 0;
-      const idf = Math.log((this.totalDocuments - df + 0.5) / (df + 0.5));
+      // Improved IDF calculation that handles small collections better
+      const idf = Math.log(this.totalDocuments / df) + 1.0; // Add +1 to ensure positive scores
       
       for (const docId of docIds) {
         const document = this.documents.get(docId);
