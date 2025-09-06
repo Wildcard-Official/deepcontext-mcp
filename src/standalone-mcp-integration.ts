@@ -80,6 +80,9 @@ export class StandaloneCodexMcp {
         this.turbopufferStore = {
             search: async (namespace: string, options: any) => {
                 return await this.turbopufferQuery(namespace, options);
+            },
+            hybridSearch: async (namespace: string, options: any) => {
+                return await this.performHybridSearch(namespace, options);
             }
         };
         
@@ -160,7 +163,11 @@ export class StandaloneCodexMcp {
             };
             
         } catch (error) {
-            this.logger.error('Indexing failed:', error);
+            this.logger.error('Indexing failed:', {
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                name: error instanceof Error ? error.name : undefined
+            });
             return {
                 success: false,
                 namespace: '',
@@ -199,21 +206,56 @@ export class StandaloneCodexMcp {
         };
     }> {
         const startTime = Date.now();
+        
+        if (!query || query.trim().length === 0) {
+            return {
+                success: false,
+                results: [],
+                searchTime: Date.now() - startTime,
+                strategy: 'hybrid',
+                metadata: {
+                    vectorResults: 0,
+                    bm25Results: 0,
+                    totalMatches: 0,
+                    queryEnhanced: false,
+                    reranked: false
+                }
+            };
+        }
+        
         const namespace = this.generateNamespace(codebasePath);
         
         try {
             this.logger.info(`🔍 Hybrid search: "${query}" in ${codebasePath}`);
 
-            // Use hybrid search service for BM25 + vector combination
-            const results = await this.hybridSearchService.search(codebasePath, query, {
-                namespace,
+            // Use direct Turbopuffer hybrid search with queries array approach
+            this.logger.debug('Generating embedding for hybrid search...');
+            const embedding = await this.generateEmbedding(query);
+            this.logger.info(`Embedding generated: ${embedding.length} dimensions`);
+
+            this.logger.info('Calling Turbopuffer hybrid search...');
+            const rawResults = await this.turbopufferStore.hybridSearch(namespace, {
+                embedding,
+                query,
                 limit: options.limit || 10,
                 vectorWeight: options.vectorWeight || 0.7,
-                bm25Weight: options.bm25Weight || 0.3,
-                fileTypes: options.fileTypes,
-                enableQueryEnhancement: options.enableQueryEnhancement,
-                enableReranking: options.enableReranking
+                bm25Weight: options.bm25Weight || 0.3
             });
+
+            this.logger.info(`Raw results received: ${rawResults.length}`);
+
+            // Convert results to expected format
+            const results = rawResults.map((result: any) => ({
+                id: result.id,
+                score: result.score,
+                content: result.metadata.content,
+                filePath: result.metadata.filePath,
+                startLine: result.metadata.startLine,
+                endLine: result.metadata.endLine,
+                symbols: result.metadata.symbols ? result.metadata.symbols.split(',').filter(Boolean) : [],
+                language: result.metadata.language,
+                similarity: result.score
+            }));
 
             const searchTime = Date.now() - startTime;
 
@@ -234,7 +276,11 @@ export class StandaloneCodexMcp {
             };
 
         } catch (error) {
-            this.logger.error('Hybrid search failed', { error, query: query.substring(0, 50) });
+            this.logger.error('Hybrid search failed', { 
+                error: error instanceof Error ? error.message : String(error), 
+                stack: error instanceof Error ? error.stack : undefined,
+                query: query.substring(0, 50) 
+            });
             return {
                 success: false,
                 results: [],
@@ -258,6 +304,7 @@ export class StandaloneCodexMcp {
         limit?: number;
         fileTypes?: string[];
         offset?: number;
+        enableReranking?: boolean;
     } = {}): Promise<{
         success: boolean;
         results: any[];
@@ -266,16 +313,72 @@ export class StandaloneCodexMcp {
     }> {
         const startTime = Date.now();
         
+        if (!query || query.trim().length === 0) {
+            return {
+                success: false,
+                results: [],
+                searchTime: Date.now() - startTime,
+                strategy: 'bm25'
+            };
+        }
+        
         try {
             this.logger.info(`📝 BM25 search: "${query}" in ${codebasePath}`);
 
             const namespace = this.generateNamespace(codebasePath);
-            const results = await this.hybridSearchService.searchBM25Only(codebasePath, query, {
-                limit: options.limit || 10,
-                fileTypes: options.fileTypes,
-                offset: options.offset,
-                namespace
+            const limit = options.limit || 10;
+
+            // Direct BM25 search through Turbopuffer
+            const response = await fetch(`https://gcp-us-central1.turbopuffer.com/v2/namespaces/${namespace}/query`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.config.turbopufferApiKey}`
+                },
+                body: JSON.stringify({
+                    rank_by: ['content', 'BM25', query],
+                    top_k: options.enableReranking ? limit * 2 : limit,
+                    include_attributes: ['content', 'symbols', 'filePath', 'startLine', 'endLine', 'language']
+                })
             });
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(`Turbopuffer BM25 search failed: ${response.status} ${error}`);
+            }
+
+            const data = await response.json();
+            const rawResults = (data.rows || []).map((item: any) => ({
+                id: item.id,
+                score: Math.max(0, parseFloat(item.$dist) || 0),
+                content: item.content || '',
+                symbols: item.symbols ? item.symbols.split(',').filter(Boolean) : [],
+                filePath: item.filePath || '',
+                startLine: item.startLine || 0,
+                endLine: item.endLine || 0,
+                language: item.language || ''
+            }));
+
+            let results = rawResults;
+
+            // Apply reranking if enabled
+            if (options.enableReranking && rawResults.length > 0 && this.config.jinaApiKey) {
+                try {
+                    this.logger.debug('Applying Jina reranking to BM25 results...');
+                    const documents = rawResults.map((r: any) => r.content);
+                    const rerankedIndices = await this.rerank(query, documents, limit);
+                    
+                    // Reorder results based on reranking scores
+                    results = rerankedIndices.map(({ index, relevance_score }) => ({
+                        ...rawResults[index],
+                        score: relevance_score
+                    }));
+                    
+                    this.logger.debug(`Reranking completed: ${rerankedIndices.length} results reordered`);
+                } catch (error) {
+                    this.logger.warn('Reranking failed, using original BM25 scores', { error: error instanceof Error ? error.message : String(error) });
+                }
+            }
 
             const searchTime = Date.now() - startTime;
             this.logger.info(`✅ BM25 search completed: ${results.length} results in ${searchTime}ms`);
@@ -399,6 +502,9 @@ export class StandaloneCodexMcp {
         indexedCodebases: IndexedCodebase[];
         currentCodebase?: IndexedCodebase;
         incrementalStats?: any;
+        // Convenience properties for simple status checks
+        indexed: boolean;
+        fileCount: number;
     }> {
         const indexedList = Array.from(this.indexedCodebases.values());
         
@@ -416,10 +522,16 @@ export class StandaloneCodexMcp {
             }
         }
 
+        // Calculate convenience properties
+        const indexed = codebasePath ? !!currentCodebase : indexedList.length > 0;
+        const fileCount = currentCodebase?.totalChunks || indexedList.reduce((sum, cb) => sum + cb.totalChunks, 0);
+
         return {
             indexedCodebases: indexedList,
             currentCodebase,
-            incrementalStats
+            incrementalStats,
+            indexed,
+            fileCount
         };
     }
 
@@ -567,7 +679,36 @@ export class StandaloneCodexMcp {
     }
 
     // Jina AI integration
+    private async rerank(query: string, documents: string[], topN?: number): Promise<Array<{ index: number; relevance_score: number }>> {
+        const response = await fetch('https://api.jina.ai/v1/rerank', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${this.config.jinaApiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'jina-reranker-v2-base-multilingual',
+                query,
+                documents,
+                top_n: topN || documents.length,
+                return_documents: false
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`Jina Reranker API error: ${response.status} ${error}`);
+        }
+
+        const data = await response.json();
+        return data.results;
+    }
+
     private async generateEmbedding(text: string): Promise<number[]> {
+        if (!text || text.trim().length === 0) {
+            throw new Error('Cannot generate embedding for empty text');
+        }
+        
         const response = await fetch(this.jinaApiUrl, {
             method: 'POST',
             headers: {
@@ -680,9 +821,190 @@ export class StandaloneCodexMcp {
         const data = await response.json();
         return (data.rows || []).map((row: any) => ({
             id: row.id,
-            score: row.score || row._distance || 0,
-            metadata: row.attributes
+            score: row.score || row._distance || row.$dist || 0,
+            metadata: row.attributes || row
         }));
+    }
+
+
+    /**
+     * True hybrid search combining vector and BM25 with RRF fusion
+     */
+    private async performHybridSearch(namespace: string, options: {
+        embedding: number[];
+        query: string;
+        limit?: number;
+        vectorWeight?: number;
+        bm25Weight?: number;
+        filters?: any;
+    }): Promise<any[]> {
+        const limit = options.limit || 10;
+        const vectorWeight = options.vectorWeight || 0.7;
+        const bm25Weight = options.bm25Weight || 0.3;
+        
+        // Use Turbopuffer's queries array format (same as backend implementation)
+        const response = await fetch(`https://gcp-us-central1.turbopuffer.com/v2/namespaces/${namespace}/query`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.config.turbopufferApiKey}`
+            },
+            body: JSON.stringify({
+                queries: [
+                    // Vector search query
+                    {
+                        rank_by: ['vector', 'ANN', options.embedding],
+                        top_k: Math.min(limit * 2, 50),
+                        include_attributes: [
+                            'content', 'symbols', 'filePath', 'startLine', 'endLine', 
+                            'language'
+                        ]
+                    },
+                    // BM25 search query
+                    {
+                        rank_by: ['content', 'BM25', options.query],
+                        top_k: Math.min(limit * 2, 50),
+                        include_attributes: [
+                            'content', 'symbols', 'filePath', 'startLine', 'endLine', 
+                            'language'
+                        ]
+                    }
+                ]
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`Turbopuffer hybrid search failed: ${response.status} ${error}`);
+        }
+
+        const data = await response.json();
+        
+        // Use the same fusion logic as backend
+        return this.fuseHybridResults(data, limit, { vectorWeight, bm25Weight });
+    }
+
+    /**
+     * Fuse hybrid search results using backend's proven logic
+     */
+    private fuseHybridResults(
+        multiQueryResults: any,
+        limit: number,
+        weights: { vectorWeight: number; bm25Weight: number }
+    ): any[] {
+        const scores = new Map<string, number>();
+        const metadata = new Map<string, any>();
+        
+        // Extract results from Turbopuffer response: { results: [{ rows: [...] }, { rows: [...] }] }
+        const vectorResults = multiQueryResults.results?.[0]?.rows || [];
+        const bm25Results = multiQueryResults.results?.[1]?.rows || [];
+        
+        this.logger.info(`Hybrid search - Vector: ${vectorResults.length}, BM25: ${bm25Results.length}`);
+        
+        // Process vector search results (first query)
+        vectorResults.forEach((item: any, rank: number) => {
+            const reciprocalRank = weights.vectorWeight / (rank + 1);
+            scores.set(item.id, (scores.get(item.id) || 0) + reciprocalRank);
+            
+            if (!metadata.has(item.id)) {
+                metadata.set(item.id, {
+                    content: item.content || '',
+                    symbols: item.symbols || '',
+                    filePath: item.filePath || '',
+                    startLine: item.startLine || 0,
+                    endLine: item.endLine || 0,
+                    language: item.language || ''
+                });
+            }
+        });
+        
+        // Process BM25 search results (second query)
+        bm25Results.forEach((item: any, rank: number) => {
+            const reciprocalRank = weights.bm25Weight / (rank + 1);
+            scores.set(item.id, (scores.get(item.id) || 0) + reciprocalRank);
+            
+            if (!metadata.has(item.id)) {
+                metadata.set(item.id, {
+                    content: item.content || '',
+                    symbols: item.symbols || '',
+                    filePath: item.filePath || '',
+                    startLine: item.startLine || 0,
+                    endLine: item.endLine || 0,
+                    language: item.language || ''
+                });
+            }
+        });
+        
+        const finalResults = Array.from(scores.entries())
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, limit)
+            .map(([id, score]) => ({
+                id,
+                score,
+                metadata: metadata.get(id)
+            }));
+        
+        this.logger.info(`Fusion completed - Final: ${finalResults.length} results`);
+        
+        return finalResults;
+    }
+
+    /**
+     * Reciprocal Rank Fusion (RRF) for combining search results
+     */
+    private fuseSearchResults(
+        results: any[], 
+        k: number = 60,
+        vectorWeight: number = 0.7,
+        bm25Weight: number = 0.3
+    ): any[] {
+        // Group results by ID and calculate RRF scores
+        const resultMap = new Map<string, any>();
+        
+        // Separate results by query type
+        const vectorResults = results.filter(r => r.queryType === 'vector');
+        const bm25Results = results.filter(r => r.queryType === 'bm25');
+        
+        // Calculate ranks for each query type
+        vectorResults.forEach((result, index) => {
+            const rrf = vectorWeight / (k + index + 1);
+            if (resultMap.has(result.id)) {
+                resultMap.get(result.id).fusedScore += rrf;
+            } else {
+                resultMap.set(result.id, {
+                    ...result,
+                    fusedScore: rrf,
+                    vectorRank: index + 1,
+                    bm25Rank: null
+                });
+            }
+        });
+        
+        bm25Results.forEach((result, index) => {
+            const rrf = bm25Weight / (k + index + 1);
+            if (resultMap.has(result.id)) {
+                resultMap.get(result.id).fusedScore += rrf;
+                resultMap.get(result.id).bm25Rank = index + 1;
+            } else {
+                resultMap.set(result.id, {
+                    ...result,
+                    fusedScore: rrf,
+                    vectorRank: null,
+                    bm25Rank: index + 1
+                });
+            }
+        });
+        
+        // Sort by fused score and return
+        return Array.from(resultMap.values())
+            .sort((a, b) => b.fusedScore - a.fusedScore)
+            .map(result => ({
+                id: result.id,
+                score: result.fusedScore,
+                metadata: result.metadata,
+                vectorRank: result.vectorRank,
+                bm25Rank: result.bm25Rank
+            }));
     }
 
     private async clearVectorStoreNamespace(namespace: string): Promise<void> {
