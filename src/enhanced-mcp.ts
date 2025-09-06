@@ -869,5 +869,9 @@ export class EnhancedCodexMcp {
 // Auto-run when called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
     const server = new EnhancedCodexMcp();
-    server.run().catch(console.error);
+    server.run().catch((error) => {
+        // In MCP mode, errors should go to stderr
+        process.stderr.write(`Fatal error: ${error instanceof Error ? error.message : String(error)}\n`);
+        process.exit(1);
+    });
 }
