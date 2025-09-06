@@ -212,6 +212,76 @@ export class EnhancedCodexMcp {
         // Tool handlers
         this.server.setRequestHandler(ListToolsRequestSchema, async () => {
             const tools: Tool[] = [
+                // Direct MCP Tools for programmatic access
+                {
+                    name: 'index_codebase',
+                    description: 'Index a codebase for intelligent search and analysis',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Path to the codebase to index'
+                            },
+                            force_reindex: {
+                                type: 'boolean',
+                                description: 'Force reindexing even if already indexed',
+                                default: false
+                            }
+                        },
+                        required: ['codebase_path']
+                    }
+                },
+                {
+                    name: 'search_codebase',
+                    description: 'Search indexed codebase with intelligent context and hybrid search',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            query: {
+                                type: 'string',
+                                description: 'Search query (natural language or specific terms)'
+                            },
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Path to the codebase to search (optional if only one indexed)'
+                            },
+                            max_results: {
+                                type: 'number',
+                                description: 'Maximum number of results to return',
+                                default: 10
+                            }
+                        },
+                        required: ['query']
+                    }
+                },
+                {
+                    name: 'get_indexing_status',
+                    description: 'Get the indexing status of codebases',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Optional: Get status for specific codebase'
+                            }
+                        }
+                    }
+                },
+                {
+                    name: 'clear_index',
+                    description: 'Clear index data for a codebase',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Path to the codebase to clear (optional to clear all)'
+                            }
+                        }
+                    }
+                },
+                // User-friendly interfaces
                 {
                     name: 'execute_slash_command',
                     description: 'Execute slash-style commands for intelligent codebase operations',
@@ -263,6 +333,20 @@ export class EnhancedCodexMcp {
 
             try {
                 switch (name) {
+                    // Direct MCP Tools
+                    case 'index_codebase':
+                        return await this.handleIndexCodebaseTool(args as any);
+                    
+                    case 'search_codebase':
+                        return await this.handleSearchCodebaseTool(args as any);
+                    
+                    case 'get_indexing_status':
+                        return await this.handleGetStatusTool(args as any);
+                    
+                    case 'clear_index':
+                        return await this.handleClearIndexTool(args as any);
+                    
+                    // User-friendly interfaces
                     case 'execute_slash_command':
                         return await this.executeSlashCommand(
                             (args as any).command, 
@@ -651,6 +735,90 @@ export class EnhancedCodexMcp {
             contents: [{
                 type: 'text',
                 text: helpText
+            }]
+        };
+    }
+
+    // ============================================================================
+    // DIRECT MCP TOOL HANDLERS
+    // ============================================================================
+
+    private async handleIndexCodebaseTool(args: any) {
+        const { codebase_path, force_reindex = false } = args;
+        
+        if (!codebase_path) {
+            throw new Error('codebase_path is required');
+        }
+
+        const result = await this.standaloneMcp.indexCodebaseIntelligent(codebase_path, force_reindex);
+        
+        return {
+            content: [{
+                type: 'text',
+                text: result.success ? 
+                    `✅ Indexing completed: ${result.chunksCreated} chunks created in ${result.processingTimeMs}ms` :
+                    `❌ Indexing failed: ${result.message}`
+            }]
+        };
+    }
+
+    private async handleSearchCodebaseTool(args: any) {
+        const { query, codebase_path, max_results = 10 } = args;
+        
+        if (!query) {
+            throw new Error('query is required');
+        }
+
+        const result = await this.standaloneMcp.searchWithIntelligence(query, codebase_path, max_results);
+        
+        if (!result.success) {
+            throw new Error(result.message || 'Search failed');
+        }
+
+        const response = {
+            total_results: result.totalResults,
+            search_time_ms: result.searchTimeMs,
+            results: result.results.map(chunk => ({
+                file_path: chunk.relativePath,
+                start_line: chunk.startLine,
+                end_line: chunk.endLine,
+                language: chunk.language,
+                content: chunk.content,
+                score: chunk.score,
+                symbols: chunk.symbols
+            }))
+        };
+
+        return {
+            content: [{
+                type: 'text',
+                text: JSON.stringify(response, null, 2)
+            }]
+        };
+    }
+
+    private async handleGetStatusTool(args: any) {
+        const { codebase_path } = args;
+        const status = await this.standaloneMcp.getIndexingStatus(codebase_path);
+        
+        return {
+            content: [{
+                type: 'text',
+                text: JSON.stringify(status, null, 2)
+            }]
+        };
+    }
+
+    private async handleClearIndexTool(args: any) {
+        const { codebase_path } = args;
+        const result = await this.standaloneMcp.clearIndex(codebase_path);
+        
+        return {
+            content: [{
+                type: 'text',
+                text: result.success ? 
+                    '✅ Index cleared successfully' : 
+                    `❌ Failed to clear index: ${result.message}`
             }]
         };
     }
