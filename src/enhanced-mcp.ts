@@ -9,10 +9,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { InitializeRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import express from 'express';
-import { randomUUID, randomBytes } from 'node:crypto';
 import {
     CallToolRequestSchema,
     ListToolsRequestSchema,
@@ -41,9 +38,6 @@ interface McpConfig {
     turbopufferApiKey: string;
     openaiApiKey?: string; // Optional - for query enhancement
     logLevel: 'debug' | 'info' | 'warn' | 'error';
-    transport?: 'stdio' | 'http';
-    port?: number;
-    authToken?: string;
 }
 
 interface SlashCommand {
@@ -108,10 +102,7 @@ export class EnhancedCodexMcp {
             jinaApiKey: process.env.JINA_API_KEY || 'test',
             turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
             openaiApiKey: process.env.OPENAI_API_KEY, // For query enhancement
-            logLevel: (process.env.LOG_LEVEL as any) || 'info',
-            transport: (process.env.TRANSPORT as 'stdio' | 'http') || 'stdio',
-            port: parseInt(process.env.PORT || '3000'),
-            authToken: process.env.AUTH_TOKEN
+            logLevel: (process.env.LOG_LEVEL as any) || 'info'
         };
         
         return { ...baseConfig, ...override };
@@ -691,13 +682,7 @@ export class EnhancedCodexMcp {
         // Initialize the standalone MCP integration
         await this.standaloneMcp.initialize();
         
-        if (this.config.transport === 'stdio') {
-            await this.runStdioTransport();
-        } else if (this.config.transport === 'http') {
-            await this.runHttpTransport();
-        } else {
-            throw new Error(`Unsupported transport: ${this.config.transport}`);
-        }
+        await this.runStdioTransport();
     }
 
     private async runStdioTransport(): Promise<void> {
@@ -711,155 +696,6 @@ export class EnhancedCodexMcp {
         this.logger.info('🔌 Transport: stdio');
     }
 
-    private async runHttpTransport(): Promise<void> {
-        const app = express();
-        app.use(express.json());
-
-        // Generate or use provided auth token
-        const authToken = this.config.authToken || randomBytes(32).toString('hex');
-        if (!this.config.authToken) {
-            this.logger.info(`Generated auth token: ${authToken}`);
-            this.logger.info(`Use this token in the Authorization header: Bearer ${authToken}`);
-        }
-
-        // Authentication middleware
-        const authenticateToken = (req: express.Request, res: express.Response, next: express.NextFunction): void => {
-            const authHeader = req.headers['authorization'];
-            const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-            if (!token) {
-                res.status(401).json({
-                    jsonrpc: '2.0',
-                    error: {
-                        code: -32001,
-                        message: 'Unauthorized: Missing bearer token',
-                    },
-                    id: null,
-                });
-                return;
-            }
-
-            if (token !== authToken) {
-                res.status(403).json({
-                    jsonrpc: '2.0',
-                    error: {
-                        code: -32002,
-                        message: 'Forbidden: Invalid bearer token',
-                    },
-                    id: null,
-                });
-                return;
-            }
-
-            next();
-        };
-
-        // Health endpoint (no authentication required)
-        app.get('/health', (req, res) => {
-            res.status(200).json({
-                status: 'healthy',
-                timestamp: new Date().toISOString(),
-                transport: 'http',
-                port: this.config.port,
-                capabilities: {
-                    queryEnhancement: !!this.config.openaiApiKey,
-                    reranking: !!this.config.jinaApiKey,
-                    vectorSearch: !!this.config.turbopufferApiKey,
-                    localBM25: true
-                }
-            });
-        });
-
-        // Apply authentication to all /mcp routes
-        app.use('/mcp', authenticateToken);
-
-        // Session management for SSE transport
-        const transports: { [sessionId: string]: SSEServerTransport } = {};
-
-        // Handle GET requests to establish SSE connection
-        app.get('/mcp', async (req, res) => {
-            try {
-                const sessionId = randomUUID();
-                const transport = new SSEServerTransport('/mcp/message', res);
-                
-                // Store transport by session ID
-                transports[sessionId] = transport;
-                
-                // Clean up transport when closed
-                transport.onclose = () => {
-                    delete transports[sessionId];
-                };
-
-                // Connect the server to this transport
-                await this.server.connect(transport);
-                
-                // Start the SSE connection
-                await transport.start();
-                
-                this.logger.debug(`SSE connection established: ${sessionId}`);
-            } catch (error) {
-                this.logger.error('Error establishing SSE connection:', error);
-                if (!res.headersSent) {
-                    res.status(500).json({
-                        jsonrpc: '2.0',
-                        error: {
-                            code: -32603,
-                            message: 'Internal server error',
-                        },
-                        id: null,
-                    });
-                }
-            }
-        });
-
-        // Handle POST requests for client messages
-        app.post('/mcp/message', async (req, res) => {
-            try {
-                // Find the appropriate transport (simple approach for single session)
-                const transport = Object.values(transports)[0]; // For simplicity, use the first transport
-                
-                if (!transport) {
-                    res.status(400).json({
-                        jsonrpc: '2.0',
-                        error: {
-                            code: -32000,
-                            message: 'No active session found',
-                        },
-                        id: null,
-                    });
-                    return;
-                }
-
-                await transport.handlePostMessage(req, res);
-            } catch (error) {
-                this.logger.error('Error handling message:', error);
-                if (!res.headersSent) {
-                    res.status(500).json({
-                        jsonrpc: '2.0',
-                        error: {
-                            code: -32603,
-                            message: 'Internal server error',
-                        },
-                        id: null,
-                    });
-                }
-            }
-        });
-
-        const port = this.config.port!;
-        app.listen(port, '0.0.0.0', () => {
-            this.logger.info('🚀 Enhanced MCP Server ready with slash commands and natural language interface!');
-            this.logger.info(`✨ Query Enhancement: ${!!this.config.openaiApiKey ? '✅ Enabled' : '❌ Disabled'}`);
-            this.logger.info(`🔄 Result Reranking: ${!!this.config.jinaApiKey ? '✅ Enabled' : '❌ Disabled'}`);
-            this.logger.info('📝 Local BM25 Search: ✅ Always Available');
-            this.logger.info(`🔌 Transport: http (SSE)`);
-            this.logger.info(`📡 Listening on port ${port}`);
-            this.logger.info(`🌐 SSE Endpoint: http://0.0.0.0:${port}/mcp`);
-            this.logger.info(`📮 Message Endpoint: http://0.0.0.0:${port}/mcp/message`);
-            this.logger.info(`❤️  Health check: http://0.0.0.0:${port}/health`);
-            this.logger.info(`🔐 Authentication: Bearer token required`);
-        });
-    }
 }
 
 // Auto-run when called directly

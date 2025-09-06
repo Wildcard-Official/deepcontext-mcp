@@ -21,6 +21,16 @@ export interface TurbopufferStore {
     limit: number;
     filters?: Record<string, any>;
   }): Promise<VectorSearchResult[]>;
+
+  // True hybrid search using RRF fusion
+  hybridSearch(namespace: string, options: {
+    embedding: number[];
+    query: string;
+    limit?: number;
+    vectorWeight?: number;
+    bm25Weight?: number;
+    filters?: Record<string, any>;
+  }): Promise<VectorSearchResult[]>;
 }
 
 export interface EmbeddingProvider {
@@ -57,7 +67,7 @@ export class HybridSearchService {
       minScore = 0.1
     } = options;
 
-    this.logger.debug('Starting native hybrid search', {
+    this.logger.debug('Starting true hybrid search with RRF fusion', {
       query: query.substring(0, 50),
       vectorWeight,
       bm25Weight,
@@ -68,12 +78,13 @@ export class HybridSearchService {
       // Generate embedding for the query
       const embedding = await this.embeddingProvider.embed(query);
       
-      // Use Turbopuffer's native hybrid search with both vector and BM25
-      const results = await this.turbopuffer.search(namespace, {
+      // Use true hybrid search combining vector + BM25 with RRF fusion
+      const results = await this.turbopuffer.hybridSearch(namespace, {
         embedding,
         query,
-        rank_by: ["vector", "ANN", embedding],
-        limit
+        limit,
+        vectorWeight,
+        bm25Weight
       });
 
       // Convert to SearchResult format
@@ -134,8 +145,8 @@ export class HybridSearchService {
 
     try {
       // Use Turbopuffer's native BM25 search without vector component
+      // Use the correct array format for BM25 rank_by
       const results = await this.turbopuffer.search(namespace, {
-        query,
         rank_by: ["content", "BM25", query],
         limit
       });

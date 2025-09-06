@@ -16,6 +16,7 @@ import { LanguageDetector } from '../../utils/LanguageDetector.js';
 import { ContentFilterProvider } from './ContentFilterProvider.js';
 import { TreeSitterSymbolExtractor } from './TreeSitterSymbolExtractor.js';
 import { IncrementalIndexer } from './IncrementalIndexer.js';
+import { Logger } from '../../utils/Logger.js';
 
 export interface IndexingRequest {
     codebasePath: string;
@@ -76,6 +77,7 @@ export class IndexingOrchestrator {
     private contentFilter: ContentFilterProvider;
     private symbolExtractor: TreeSitterSymbolExtractor;
     private incrementalIndexer: IncrementalIndexer;
+    private logger: Logger;
 
     constructor() {
         this.fileUtils = new FileUtils();
@@ -83,6 +85,7 @@ export class IndexingOrchestrator {
         this.contentFilter = new ContentFilterProvider();
         this.symbolExtractor = new TreeSitterSymbolExtractor();
         this.incrementalIndexer = new IncrementalIndexer();
+        this.logger = new Logger('INDEXING-ORCHESTRATOR', 'info');
     }
 
     /**
@@ -92,8 +95,8 @@ export class IndexingOrchestrator {
         const startTime = Date.now();
         const errors: Array<{ file: string; error: string }> = [];
         
-        console.log(`[INDEXING] 🚀 Starting indexing: ${request.codebasePath}`);
-        console.log(`[INDEXING] 📋 Options: ${JSON.stringify({
+        this.logger.info(`🚀 Starting indexing: ${request.codebasePath}`);
+        this.logger.debug(`📋 Options: ${JSON.stringify({
             force: request.force,
             incremental: request.enableIncrementalUpdate,
             filtering: request.enableContentFiltering,
@@ -103,20 +106,20 @@ export class IndexingOrchestrator {
         try {
             // Step 1: Determine indexing strategy (full vs incremental)
             const indexingMethod = await this.determineIndexingMethod(request);
-            console.log(`[INDEXING] 📊 Method: ${indexingMethod}`);
+            this.logger.debug(`📊 Method: ${indexingMethod}`);
 
             // Step 2: Discover files
             const allFiles = await this.fileUtils.discoverFiles(
                 request.codebasePath,
                 request.supportedLanguages || ['typescript', 'javascript', 'python', 'java', 'cpp', 'go', 'rust']
             );
-            console.log(`[INDEXING] 📁 Discovered: ${allFiles.length} files`);
+            this.logger.debug(`📁 Discovered: ${allFiles.length} files`);
 
             // Step 3: Apply content filtering
             let filesToProcess = allFiles;
             if (request.enableContentFiltering !== false) {
                 filesToProcess = await this.applyContentFiltering(allFiles, request.codebasePath);
-                console.log(`[INDEXING] 🔍 After filtering: ${filesToProcess.length} files`);
+                this.logger.debug(`🔍 After filtering: ${filesToProcess.length} files`);
             }
 
             // Step 4: Determine which files need processing (for incremental)
@@ -125,11 +128,11 @@ export class IndexingOrchestrator {
                 : filesToProcess;
             
             if (filesToUpdate.length === 0) {
-                console.log('[INDEXING] ⚡ No files need updating');
+                this.logger.info('⚡ No files need updating');
                 return this.createNoUpdateResult(request, startTime);
             }
 
-            console.log(`[INDEXING] 📝 Processing: ${filesToUpdate.length} files`);
+            this.logger.info(`📝 Processing: ${filesToUpdate.length} files`);
 
             // Step 5: Process files in batches
             const chunks: CodeChunk[] = [];
@@ -153,7 +156,7 @@ export class IndexingOrchestrator {
                     }
                 });
 
-                console.log(`[INDEXING] 📊 Processed: ${Math.min(i + batchSize, filesToUpdate.length)}/${filesToUpdate.length} files`);
+                this.logger.debug(`📊 Processed: ${Math.min(i + batchSize, filesToUpdate.length)}/${filesToUpdate.length} files`);
             }
 
             // Step 6: Update incremental index metadata
@@ -166,7 +169,7 @@ export class IndexingOrchestrator {
             }
 
             const indexingTime = Date.now() - startTime;
-            console.log(`[INDEXING] ✅ Complete: ${chunks.length} chunks in ${indexingTime}ms`);
+            this.logger.info(`✅ Complete: ${chunks.length} chunks in ${indexingTime}ms`);
 
             return {
                 success: true,
@@ -365,7 +368,7 @@ export class IndexingOrchestrator {
                 if (shouldInclude.include) {
                     filtered.push(file);
                 } else {
-                    console.log(`[INDEXING] 🚫 Filtered: ${relativePath} (${shouldInclude.reason})`);
+                    this.logger.debug(`🚫 Filtered: ${relativePath} (${shouldInclude.reason})`);
                 }
             } catch (error) {
                 console.warn(`[INDEXING] ⚠️ Error filtering ${file}: ${error}`);

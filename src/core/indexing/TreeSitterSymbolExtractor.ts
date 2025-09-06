@@ -14,6 +14,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { Logger } from '../../utils/Logger.js';
 
 // Tree-sitter types and languages
 interface TreeSitterParser {
@@ -107,9 +108,11 @@ export class TreeSitterSymbolExtractor {
     private parsers: Map<string, TreeSitterParser> = new Map();
     private queries: Map<string, TreeSitterQuery> = new Map();
     private initialized = false;
+    private logger: Logger;
 
     constructor() {
         // Initialization will be deferred until first use
+        this.logger = new Logger('SYMBOL-EXTRACTOR', 'info');
     }
 
     /**
@@ -126,9 +129,9 @@ export class TreeSitterSymbolExtractor {
             // Add more languages as needed
             
             this.initialized = true;
-            console.log('[SYMBOL-EXTRACTOR] ✅ Tree-sitter initialization complete');
+            this.logger.debug('✅ Tree-sitter initialization complete');
         } catch (error) {
-            console.warn('[SYMBOL-EXTRACTOR] ⚠️ Tree-sitter not available, falling back to regex-based extraction');
+            this.logger.warn('⚠️ Tree-sitter not available, falling back to regex-based extraction');
             this.initialized = false;
         }
     }
@@ -213,7 +216,7 @@ export class TreeSitterSymbolExtractor {
             };
 
         } catch (error) {
-            console.warn(`[SYMBOL-EXTRACTOR] Tree-sitter parsing failed for ${filePath}: ${error}`);
+            this.logger.warn(`Tree-sitter parsing failed for ${filePath}: ${error}`);
             return this.extractWithRegex(content, language, filePath);
         }
     }
