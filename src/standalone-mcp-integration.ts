@@ -7,12 +7,23 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
+// MCP Server imports
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+    CallToolRequestSchema,
+    ListToolsRequestSchema,
+    ListResourcesRequestSchema,
+    ReadResourceRequestSchema,
+    Tool,
+    Resource
+} from '@modelcontextprotocol/sdk/types.js';
+
 // Core components
 import { IndexingOrchestrator } from './core/indexing/IndexingOrchestrator.js';
-import { IncrementalIndexer } from './core/indexing/IncrementalIndexer.js';
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
-import { HybridSearchService, TurbopufferStore } from './services/HybridSearchService.js';
+import { TurbopufferStore } from './services/HybridSearchService.js';
 
 // Types from IndexingOrchestrator (actual implementation)
 import type { 
@@ -41,7 +52,7 @@ interface IndexedCodebase {
     indexedAt: string;
 }
 
-interface StandaloneConfig {
+interface McpConfig {
     jinaApiKey: string;
     turbopufferApiKey: string;
     openaiApiKey?: string;
@@ -49,13 +60,11 @@ interface StandaloneConfig {
 }
 
 export class StandaloneCodexMcp {
-    private config: StandaloneConfig;
+    private config: McpConfig;
     private indexingOrchestrator: IndexingOrchestrator;
-    private incrementalIndexer: IncrementalIndexer;
     private fileUtils: FileUtils;
     private logger: Logger;
     private turbopufferStore: TurbopufferStore;
-    private hybridSearchService: HybridSearchService;
     
     // Vector store integration
     private turbopufferApiUrl = 'https://gcp-us-central1.turbopuffer.com/v2';
@@ -64,18 +73,12 @@ export class StandaloneCodexMcp {
     // State management
     private indexedCodebases: Map<string, IndexedCodebase> = new Map();
 
-    constructor(config?: Partial<StandaloneConfig>) {
-        this.config = {
-            jinaApiKey: config?.jinaApiKey || process.env.JINA_API_KEY || 'test',
-            turbopufferApiKey: config?.turbopufferApiKey || process.env.TURBOPUFFER_API_KEY || 'test',
-            openaiApiKey: config?.openaiApiKey || process.env.OPENAI_API_KEY,
-            logLevel: config?.logLevel || 'info'
-        };
+    constructor(config?: Partial<McpConfig>) {
+        this.config = this.loadConfig(config);
         
         this.logger = new Logger('STANDALONE-INTEGRATION', this.config.logLevel);
         this.fileUtils = new FileUtils();
         this.indexingOrchestrator = new IndexingOrchestrator();
-        this.incrementalIndexer = new IncrementalIndexer();
         // Create Turbopuffer store integration
         this.turbopufferStore = {
             search: async (namespace: string, options: any) => {
@@ -85,15 +88,17 @@ export class StandaloneCodexMcp {
                 return await this.performHybridSearch(namespace, options);
             }
         };
+    }
+
+    private loadConfig(override?: Partial<McpConfig>): McpConfig {
+        const baseConfig: McpConfig = {
+            jinaApiKey: process.env.JINA_API_KEY || 'test',
+            turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
+            openaiApiKey: process.env.OPENAI_API_KEY, // For query enhancement
+            logLevel: (process.env.LOG_LEVEL as any) || 'info'
+        };
         
-        // Create embedding integration for hybrid search
-        const embedding = this.createEmbeddingIntegration();
-        
-        // Initialize hybrid search service using Turbopuffer's native capabilities
-        this.hybridSearchService = new HybridSearchService(
-            this.turbopufferStore,
-            embedding
-        );
+        return { ...baseConfig, ...override };
     }
 
     /**
@@ -120,9 +125,9 @@ export class StandaloneCodexMcp {
             const indexingRequest: IndexingRequest = {
                 codebasePath,
                 force: forceReindex,
+                enableIncrementalUpdate: !forceReindex,
                 enableContentFiltering: true,
-                enableDependencyAnalysis: true,
-                enableIncrementalUpdate: !forceReindex
+                enableDependencyAnalysis: true
             };
 
             const result = await this.indexingOrchestrator.indexCodebase(indexingRequest);
@@ -531,11 +536,11 @@ export class StandaloneCodexMcp {
             }
             
             if (currentCodebase) {
-                try {
-                    incrementalStats = await this.incrementalIndexer.getIndexStats(codebasePath);
-                } catch (error) {
-                    this.logger.warn('Could not get incremental stats:', error);
-                }
+                // Note: Incremental stats could be implemented here if needed
+                incrementalStats = {
+                    indexingMethod: 'full',
+                    lastIndexed: currentCodebase.indexedAt
+                };
             }
         }
 
@@ -569,8 +574,7 @@ export class StandaloneCodexMcp {
                     namespacesToClear.push(indexed.namespace);
                     this.indexedCodebases.delete(codebasePath);
                     
-                    // Clear incremental metadata
-                    await this.incrementalIndexer.forceFullReindex(codebasePath);
+                    // Note: Could clear incremental metadata here if implemented
                 }
             } else {
                 // Clear all
@@ -640,7 +644,7 @@ export class StandaloneCodexMcp {
                 startLine: chunk.startLine,
                 endLine: chunk.endLine,
                 language: chunk.language,
-                symbols: chunk.symbols.join(','),
+                symbols: chunk.symbols.map(s => typeof s === 'string' ? s : s.name).join(','),
                 codebasePath: this.resolveCodebasePath(chunk.filePath)
             }));
             
@@ -1078,4 +1082,277 @@ export class StandaloneCodexMcp {
         await this.loadIndexedCodebases();
         this.logger.info(`Loaded ${this.indexedCodebases.size} indexed codebases`);
     }
+}
+
+// MCP Server Implementation
+class StandaloneMCPServer {
+    private server: Server;
+    private codexMcp: StandaloneCodexMcp;
+    
+    constructor() {
+        this.codexMcp = new StandaloneCodexMcp();
+        
+        this.server = new Server(
+            {
+                name: 'intelligent-context-mcp',
+                version: '2.0.0',
+            },
+            {
+                capabilities: {
+                    tools: {}
+                }
+            }
+        );
+        
+        this.setupHandlers();
+    }
+    
+    private setupHandlers(): void {
+        this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+            const tools: Tool[] = [
+                {
+                    name: 'index_codebase',
+                    description: 'Index a codebase for intelligent search and analysis',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Path to the codebase to index'
+                            },
+                            force_reindex: {
+                                type: 'boolean',
+                                description: 'Force reindexing even if already indexed',
+                                default: false
+                            }
+                        },
+                        required: ['codebase_path']
+                    }
+                },
+                {
+                    name: 'search_codebase',
+                    description: 'Search indexed codebase with intelligent hybrid search (vector + BM25)',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            query: {
+                                type: 'string',
+                                description: 'Search query (natural language or specific terms)'
+                            },
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Path to the codebase to search (optional if only one indexed)'
+                            },
+                            max_results: {
+                                type: 'number',
+                                description: 'Maximum number of results to return',
+                                default: 10
+                            }
+                        },
+                        required: ['query']
+                    }
+                },
+                {
+                    name: 'get_indexing_status',
+                    description: 'Get the indexing status of codebases',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Optional: Get status for specific codebase'
+                            }
+                        }
+                    }
+                },
+                {
+                    name: 'clear_index',
+                    description: 'Clear index data for a codebase',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            codebase_path: {
+                                type: 'string',
+                                description: 'Path to the codebase to clear (optional to clear all)'
+                            }
+                        }
+                    }
+                }
+            ];
+
+            return { tools };
+        });
+
+        this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+            const { name, arguments: args } = request.params;
+
+            try {
+                switch (name) {
+                    case 'index_codebase':
+                        const indexResult = await this.codexMcp.indexCodebaseIntelligent(
+                            (args as any).codebase_path,
+                            (args as any).force_reindex || false
+                        );
+                        
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: indexResult.success ? 
+                                    `✅ Indexing completed: ${indexResult.chunksCreated} chunks created in ${indexResult.processingTimeMs}ms` :
+                                    `❌ Indexing failed: ${indexResult.message}`
+                            }]
+                        };
+                    
+                    case 'search_codebase':
+                        const searchResult = await this.codexMcp.searchWithIntelligence(
+                            (args as any).query,
+                            (args as any).codebase_path,
+                            (args as any).max_results || 10
+                        );
+                        
+                        if (!searchResult.success) {
+                            return {
+                                content: [{
+                                    type: 'text',
+                                    text: `❌ Search failed: ${searchResult.message}`
+                                }]
+                            };
+                        }
+
+                        const response = {
+                            total_results: searchResult.totalResults,
+                            search_time_ms: searchResult.searchTimeMs,
+                            results: searchResult.results.map(chunk => ({
+                                file_path: chunk.relativePath,
+                                start_line: chunk.startLine,
+                                end_line: chunk.endLine,
+                                language: chunk.language,
+                                content: chunk.content,
+                                score: chunk.score,
+                                symbols: chunk.symbols
+                            }))
+                        };
+
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify(response, null, 2)
+                            }]
+                        };
+                    
+                    case 'get_indexing_status':
+                        const status = await this.codexMcp.getIndexingStatus((args as any).codebase_path);
+                        
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify(status, null, 2)
+                            }]
+                        };
+                    
+                    case 'clear_index':
+                        const clearResult = await this.codexMcp.clearIndex((args as any).codebase_path);
+                        
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: clearResult.success ? 
+                                    '✅ Index cleared successfully' : 
+                                    `❌ Failed to clear index: ${clearResult.message}`
+                            }]
+                        };
+                    
+                    default:
+                        throw new Error(`Unknown tool: ${name}`);
+                }
+            } catch (error) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `Error: ${error instanceof Error ? error.message : String(error)}`
+                    }]
+                };
+            }
+        });
+
+        // Resource handlers
+        this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
+            const resources: Resource[] = [
+                {
+                    uri: 'mcp://codebase-status',
+                    name: 'Codebase Status',
+                    description: 'Current status of indexed codebases'
+                }
+            ];
+
+            return { resources };
+        });
+
+        this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+            const uri = request.params.uri;
+
+            switch (uri) {
+                case 'mcp://codebase-status':
+                    const status = await this.codexMcp.getIndexingStatus();
+                    return {
+                        contents: [{
+                            type: 'text',
+                            text: JSON.stringify(status, null, 2)
+                        }]
+                    };
+                
+                default:
+                    throw new Error(`Unknown resource: ${uri}`);
+            }
+        });
+    }
+    
+    async run(): Promise<void> {
+        // Show configuration status
+        const config = {
+            openaiApiKey: process.env.OPENAI_API_KEY,
+            jinaApiKey: process.env.JINA_API_KEY,
+            turbopufferApiKey: process.env.TURBOPUFFER_API_KEY
+        };
+        
+        const capabilities = {
+            queryEnhancement: !!config.openaiApiKey,
+            reranking: !!config.jinaApiKey && config.jinaApiKey !== 'test',
+            vectorSearch: !!config.turbopufferApiKey && config.turbopufferApiKey !== 'test',
+            localBM25: true
+        };
+        
+        console.error('🔧 Capabilities:', JSON.stringify(capabilities));
+        
+        if (!config.openaiApiKey) {
+            console.error('⚠️  OpenAI API key not provided - query enhancement will be disabled');
+            console.error('💡 Set OPENAI_API_KEY environment variable to enable query enhancement');
+        }
+        
+        if (!config.jinaApiKey || config.jinaApiKey === 'test') {
+            console.error('⚠️  Jina API key not provided - result reranking will be disabled');
+            console.error('💡 Set JINA_API_KEY environment variable to enable result reranking');
+        }
+        
+        // Initialize the standalone MCP integration
+        await this.codexMcp.initialize();
+        
+        const transport = new StdioServerTransport();
+        await this.server.connect(transport);
+        
+        console.error('🚀 Intelligent Context MCP Server ready!');
+        console.error(`✨ Query Enhancement: ${!!config.openaiApiKey ? '✅ Enabled' : '❌ Disabled'}`);
+        console.error(`🔄 Result Reranking: ${!!(config.jinaApiKey && config.jinaApiKey !== 'test') ? '✅ Enabled' : '❌ Disabled'}`);
+        console.error('📝 Local BM25 Search: ✅ Always Available');
+        console.error('🔌 Transport: stdio');
+    }
+}
+
+// Auto-run when called directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+    const server = new StandaloneMCPServer();
+    server.run().catch((error) => {
+        console.error(`Fatal error: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+    });
 }
