@@ -1099,7 +1099,8 @@ class StandaloneMCPServer {
             },
             {
                 capabilities: {
-                    tools: {}
+                    tools: {},
+                    resources: {}
                 }
             }
         );
