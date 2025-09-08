@@ -110,6 +110,10 @@ export class StandaloneCodexMcp {
         const startTime = Date.now();
         
         try {
+            // Validate path exists and is accessible
+            const normalizedPath = path.resolve(codebasePath);
+            await fs.access(normalizedPath);
+            
             this.logger.info(`Starting intelligent indexing for: ${codebasePath}`);
             
             // Use new architecture for indexing
@@ -138,15 +142,15 @@ export class StandaloneCodexMcp {
             await this.uploadChunksToVectorStore(result.metadata.namespace, result.chunks);
             
             // Store indexing metadata
-            const normalizedPath = path.resolve(codebasePath);
+            const resolvedPath = path.resolve(codebasePath);
             const indexedCodebase: IndexedCodebase = {
-                path: normalizedPath,
+                path: resolvedPath,
                 namespace: result.metadata.namespace,
                 totalChunks: result.chunks.length,
                 indexedAt: new Date().toISOString()
             };
             
-            this.indexedCodebases.set(normalizedPath, indexedCodebase);
+            this.indexedCodebases.set(resolvedPath, indexedCodebase);
             await this.saveIndexedCodebases();
 
             const processingTime = Date.now() - startTime;
@@ -512,7 +516,20 @@ export class StandaloneCodexMcp {
         let incrementalStats: any;
         
         if (codebasePath) {
-            currentCodebase = this.indexedCodebases.get(codebasePath);
+            // Validate path exists if provided
+            try {
+                const normalizedPath = path.resolve(codebasePath);
+                await fs.access(normalizedPath);
+                currentCodebase = this.indexedCodebases.get(normalizedPath);
+            } catch (error) {
+                // Path doesn't exist - return empty status
+                return {
+                    indexedCodebases: indexedList,
+                    indexed: false,
+                    fileCount: 0
+                };
+            }
+            
             if (currentCodebase) {
                 try {
                     incrementalStats = await this.incrementalIndexer.getIndexStats(codebasePath);
