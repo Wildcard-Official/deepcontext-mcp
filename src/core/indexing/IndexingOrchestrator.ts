@@ -14,8 +14,8 @@ import * as crypto from 'crypto';
 import { FileUtils } from '../../utils/FileUtils.js';
 import { LanguageDetector } from '../../utils/LanguageDetector.js';
 import { ContentFilterProvider } from './ContentFilterProvider.js';
-import { TreeSitterSymbolExtractor } from './TreeSitterSymbolExtractor.js';
-import { IncrementalIndexer } from './IncrementalIndexer.js';
+import { TreeSitterSymbolExtractorFull } from './TreeSitterSymbolExtractor.treesitter-based.js';
+import { TreeSitterChunkExtractor, SemanticChunk } from './TreeSitterChunkExtractor.js';
 import { Logger } from '../../utils/Logger.js';
 
 export interface IndexingRequest {
@@ -23,7 +23,6 @@ export interface IndexingRequest {
     force?: boolean;
     enableDependencyAnalysis?: boolean;
     enableContentFiltering?: boolean;
-    enableIncrementalUpdate?: boolean;
     maxChunkSize?: number;
     maxChunkLines?: number;
     supportedLanguages?: string[];
@@ -75,16 +74,16 @@ export class IndexingOrchestrator {
     private fileUtils: FileUtils;
     private languageDetector: LanguageDetector;
     private contentFilter: ContentFilterProvider;
-    private symbolExtractor: TreeSitterSymbolExtractor;
-    private incrementalIndexer: IncrementalIndexer;
+    private symbolExtractor: TreeSitterSymbolExtractorFull;
+    private chunkExtractor: TreeSitterChunkExtractor;
     private logger: Logger;
 
     constructor() {
         this.fileUtils = new FileUtils();
         this.languageDetector = new LanguageDetector();
         this.contentFilter = new ContentFilterProvider();
-        this.symbolExtractor = new TreeSitterSymbolExtractor();
-        this.incrementalIndexer = new IncrementalIndexer();
+        this.symbolExtractor = new TreeSitterSymbolExtractorFull();
+        this.chunkExtractor = new TreeSitterChunkExtractor();
         this.logger = new Logger('INDEXING-ORCHESTRATOR', 'info');
     }
 
@@ -98,48 +97,33 @@ export class IndexingOrchestrator {
         this.logger.info(`🚀 Starting indexing: ${request.codebasePath}`);
         this.logger.debug(`📋 Options: ${JSON.stringify({
             force: request.force,
-            incremental: request.enableIncrementalUpdate,
             filtering: request.enableContentFiltering,
             dependencies: request.enableDependencyAnalysis
         })}`);
 
         try {
-            // Step 1: Determine indexing strategy (full vs incremental)
-            const indexingMethod = await this.determineIndexingMethod(request);
-            this.logger.debug(`📊 Method: ${indexingMethod}`);
-
-            // Step 2: Discover files
+            // Step 1: Discover files
             const allFiles = await this.fileUtils.discoverFiles(
                 request.codebasePath,
                 request.supportedLanguages || ['typescript', 'javascript', 'python', 'java', 'cpp', 'go', 'rust']
             );
             this.logger.debug(`📁 Discovered: ${allFiles.length} files`);
 
-            // Step 3: Apply content filtering
+            // Step 2: Apply content filtering
             let filesToProcess = allFiles;
             if (request.enableContentFiltering !== false) {
                 filesToProcess = await this.applyContentFiltering(allFiles, request.codebasePath);
                 this.logger.debug(`🔍 After filtering: ${filesToProcess.length} files`);
             }
 
-            // Step 4: Determine which files need processing (for incremental)
-            const filesToUpdate = indexingMethod === 'incremental' 
-                ? await this.incrementalIndexer.getFilesToUpdate(filesToProcess, request.codebasePath)
-                : filesToProcess;
-            
-            if (filesToUpdate.length === 0) {
-                this.logger.info('⚡ No files need updating');
-                return this.createNoUpdateResult(request, startTime);
-            }
+            this.logger.info(`📝 Processing: ${filesToProcess.length} files`);
 
-            this.logger.info(`📝 Processing: ${filesToUpdate.length} files`);
-
-            // Step 5: Process files in batches
+            // Step 3: Process files in batches
             const chunks: CodeChunk[] = [];
             const batchSize = 10;
             
-            for (let i = 0; i < filesToUpdate.length; i += batchSize) {
-                const batch = filesToUpdate.slice(i, i + batchSize);
+            for (let i = 0; i < filesToProcess.length; i += batchSize) {
+                const batch = filesToProcess.slice(i, i + batchSize);
                 const batchResults = await Promise.allSettled(
                     batch.map(file => this.processFile(file, request))
                 );
@@ -156,16 +140,7 @@ export class IndexingOrchestrator {
                     }
                 });
 
-                this.logger.debug(`📊 Processed: ${Math.min(i + batchSize, filesToUpdate.length)}/${filesToUpdate.length} files`);
-            }
-
-            // Step 6: Update incremental index metadata
-            if (indexingMethod === 'incremental') {
-                await this.incrementalIndexer.updateIndexMetadata(
-                    request.codebasePath,
-                    filesToUpdate,
-                    chunks
-                );
+                this.logger.debug(`📊 Processed: ${Math.min(i + batchSize, filesToProcess.length)}/${filesToProcess.length} files`);
             }
 
             const indexingTime = Date.now() - startTime;
@@ -176,16 +151,16 @@ export class IndexingOrchestrator {
                 metadata: {
                     codebasePath: request.codebasePath,
                     namespace: this.generateNamespace(request.codebasePath),
-                    totalFiles: filesToUpdate.length,
+                    totalFiles: filesToProcess.length,
                     totalChunks: chunks.length,
                     totalSymbols: chunks.reduce((sum, chunk) => sum + chunk.symbols.length, 0),
                     indexingTime,
-                    indexingMethod,
+                    indexingMethod: 'full',
                     features: {
                         astExtraction: true,
                         contentFiltering: request.enableContentFiltering !== false,
                         dependencyAnalysis: request.enableDependencyAnalysis !== false,
-                        incrementalUpdate: request.enableIncrementalUpdate !== false
+                        incrementalUpdate: false
                     }
                 },
                 chunks,
@@ -218,35 +193,352 @@ export class IndexingOrchestrator {
     }
 
     /**
-     * Process a single file into chunks
+     * Process a single file into semantic chunks using Tree-sitter AST parsing
+     * Uses TreeSitterChunkExtractor for meaningful code unit extraction
      */
-    private async processFile(filePath: string, request: IndexingRequest): Promise<CodeChunk[]> {
+    public async processFile(filePath: string, request: IndexingRequest): Promise<CodeChunk[]> {
         const content = await fs.readFile(filePath, 'utf-8');
         const language = this.languageDetector.detectLanguage(filePath, content);
         const relativePath = path.relative(request.codebasePath, filePath);
 
-        // Extract symbols using Tree-sitter
-        const symbolAnalysis = await this.symbolExtractor.extractSymbols(
-            content, 
-            language.language, 
-            filePath
-        );
+        try {
+            // Use new TreeSitterChunkExtractor for semantic chunking
+            const chunkingResult = await this.chunkExtractor.extractSemanticChunks(
+                content,
+                language.language,
+                filePath,
+                relativePath
+            );
 
-        // Create chunks based on symbol boundaries
-        const chunks = this.createSymbolBasedChunks(
-            content,
-            filePath,
-            relativePath,
-            language.language,
-            symbolAnalysis,
-            request
-        );
+            // Convert SemanticChunk[] to CodeChunk[] format
+            const chunks: CodeChunk[] = chunkingResult.chunks.map(semanticChunk => ({
+                id: semanticChunk.id,
+                content: semanticChunk.content,
+                filePath: semanticChunk.filePath,
+                relativePath: semanticChunk.relativePath,
+                startLine: semanticChunk.startLine,
+                endLine: semanticChunk.endLine,
+                language: semanticChunk.language,
+                symbols: semanticChunk.symbols.map(symbol => ({
+                    name: symbol.name,
+                    type: symbol.type as any,
+                    line: symbol.line,
+                    scope: symbol.scope
+                })),
+                imports: semanticChunk.imports
+            }));
 
+            this.logger.debug(`Created ${chunks.length} semantic chunks for ${filePath}`);
+            
+            // Log chunk details for debugging
+            if (chunks.length > 0) {
+                const avgSize = chunks.reduce((sum, chunk) => sum + chunk.content.length, 0) / chunks.length;
+                this.logger.debug(`Average chunk size: ${avgSize.toFixed(0)} characters`);
+            }
+
+            return chunks;
+
+        } catch (error) {
+            // Fallback to simpler chunking if semantic chunking fails
+            this.logger.warn(`Semantic chunking failed for ${filePath}, using fallback: ${error}`);
+            return this.createFallbackChunks(content, filePath, relativePath, language.language);
+        }
+    }
+
+    /**
+     * Create chunks from documentable nodes (complete logical units)
+     * Each node becomes one chunk with complete boundaries and context
+     */
+    private createDocumentableNodeChunks(
+        filePath: string,
+        relativePath: string,
+        language: string,
+        nodeAnalysis: any,
+        request: IndexingRequest
+    ): CodeChunk[] {
+        const chunks: CodeChunk[] = [];
+        const maxChunkSize = request.maxChunkSize || 8000; // Increased for complete functions
+        const maxChunkLines = request.maxChunkLines || 300;
+
+        for (const node of nodeAnalysis.nodes) {
+            // Check if node needs hierarchical chunking
+            const needsHierarchicalChunking = 
+                node.content.length > maxChunkSize || 
+                (node.endLine - node.startLine) > maxChunkLines;
+
+            if (needsHierarchicalChunking && node.type === 'class') {
+                // Apply hierarchical chunking to large classes
+                const hierarchicalChunks = this.createHierarchicalClassChunks(
+                    node, filePath, relativePath, language
+                );
+                chunks.push(...hierarchicalChunks);
+                this.logger.debug(`Created ${hierarchicalChunks.length} hierarchical chunks for class ${node.name}`);
+            } else {
+                // Create single chunk for smaller nodes
+                const symbols = [{
+                    name: node.name,
+                    type: node.type === 'method' ? 'function' : node.type,
+                    line: node.startLine,
+                    scope: node.scope
+                }];
+
+                const imports = node.imports.map((importPath: string) => ({
+                    module: importPath,
+                    symbols: [],
+                    line: 1
+                }));
+
+                chunks.push({
+                    id: this.generateChunkId(filePath, node.startLine, node.content),
+                    content: node.content,
+                    filePath,
+                    relativePath,
+                    startLine: node.startLine,
+                    endLine: node.endLine,
+                    language,
+                    symbols,
+                    imports
+                });
+            }
+        }
+
+        this.logger.debug(`Created ${chunks.length} documentable node chunks for ${filePath}`);
         return chunks;
     }
 
     /**
-     * Create chunks based on symbol boundaries
+     * Create hierarchical chunks for large classes
+     * Splits large classes into: class overview + individual methods
+     */
+    private createHierarchicalClassChunks(
+        node: any,
+        filePath: string,
+        relativePath: string,
+        language: string
+    ): CodeChunk[] {
+        const chunks: CodeChunk[] = [];
+        const lines = node.content.split('\n');
+        
+        // Create class overview chunk (first ~50 lines or until first method)
+        const overviewEndLine = this.findClassOverviewEnd(lines);
+        const overviewContent = lines.slice(0, overviewEndLine + 1).join('\n');
+        
+        chunks.push({
+            id: this.generateChunkId(filePath, node.startLine, overviewContent),
+            content: overviewContent,
+            filePath,
+            relativePath,
+            startLine: node.startLine,
+            endLine: node.startLine + overviewEndLine,
+            language,
+            symbols: [{
+                name: node.name,
+                type: 'class',
+                line: node.startLine,
+                scope: node.scope
+            }],
+            imports: node.imports.map((importPath: string) => ({
+                module: importPath,
+                symbols: [],
+                line: 1
+            }))
+        });
+
+        // Extract individual methods from the remaining content
+        const methodChunks = this.extractMethodsFromClass(
+            lines.slice(overviewEndLine + 1),
+            node,
+            filePath,
+            relativePath,
+            language,
+            node.startLine + overviewEndLine + 1
+        );
+        
+        chunks.push(...methodChunks);
+        return chunks;
+    }
+
+    /**
+     * Find where class overview should end (after constructor, before first real method)
+     */
+    private findClassOverviewEnd(lines: string[]): number {
+        let constructorEnd = -1;
+        
+        // First, find the end of constructor if it exists
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.includes('constructor')) {
+                // Find the end of constructor
+                constructorEnd = this.findMethodEndInLines(lines, i);
+                break;
+            }
+        }
+        
+        // If we found constructor, look for first method after it
+        const searchStart = Math.max(constructorEnd + 1, 0);
+        for (let i = searchStart; i < Math.min(lines.length, 80); i++) {
+            const line = lines[i].trim();
+            // Look for method patterns (but not constructor)
+            if (line.match(/^\s*(public|private|protected)?\s*(async\s+)?\w+\s*\(/)) {
+                if (!line.includes('constructor')) {
+                    return Math.max(i - 1, constructorEnd + 1); // Include line before method
+                }
+            }
+        }
+        
+        // Default: include constructor + some buffer, or first 50 lines
+        return Math.min(constructorEnd + 5, 49, lines.length - 1);
+    }
+
+    /**
+     * Extract individual methods from class content
+     */
+    private extractMethodsFromClass(
+        lines: string[],
+        classNode: any,
+        filePath: string,
+        relativePath: string,
+        language: string,
+        startLineOffset: number
+    ): CodeChunk[] {
+        const methods: CodeChunk[] = [];
+        let i = 0;
+
+        while (i < lines.length) {
+            const line = lines[i].trim();
+            
+            // Look for method declarations
+            const methodMatch = line.match(/^\s*(public|private|protected)?\s*(async\s+)?(\w+)\s*\(/);
+            if (methodMatch) {
+                const methodName = methodMatch[3];
+                const methodStart = i;
+                const methodEnd = this.findMethodEnd(lines, i);
+                
+                if (methodEnd > methodStart) {
+                    // Find preceding comments (JSDoc, etc.)
+                    const commentStart = this.findPrecedingComments(lines, methodStart);
+                    const methodContent = lines.slice(commentStart, methodEnd + 1).join('\n');
+                    
+                    methods.push({
+                        id: this.generateChunkId(filePath, startLineOffset + commentStart, methodContent),
+                        content: methodContent,
+                        filePath,
+                        relativePath,
+                        startLine: startLineOffset + commentStart,
+                        endLine: startLineOffset + methodEnd,
+                        language,
+                        symbols: [{
+                            name: `${classNode.name}.${methodName}`,
+                            type: 'function',
+                            line: startLineOffset + methodStart,
+                            scope: classNode.scope
+                        }],
+                        imports: classNode.imports.map((importPath: string) => ({
+                            module: importPath,
+                            symbols: [],
+                            line: 1
+                        }))
+                    });
+                }
+                
+                i = methodEnd + 1;
+            } else {
+                i++;
+            }
+        }
+        
+        return methods;
+    }
+
+    /**
+     * Find the end of a method using brace matching (helper for hierarchical chunking)
+     */
+    private findMethodEndInLines(lines: string[], startIndex: number): number {
+        let braceCount = 0;
+        let foundOpenBrace = false;
+        
+        for (let i = startIndex; i < lines.length; i++) {
+            const line = lines[i];
+            
+            for (const char of line) {
+                if (char === '{') {
+                    braceCount++;
+                    foundOpenBrace = true;
+                } else if (char === '}') {
+                    braceCount--;
+                    
+                    if (foundOpenBrace && braceCount === 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        
+        return startIndex; // Fallback if no matching brace found
+    }
+
+    /**
+     * Find the end of a method using brace matching
+     */
+    private findMethodEnd(lines: string[], startIndex: number): number {
+        let braceCount = 0;
+        let foundOpenBrace = false;
+        
+        for (let i = startIndex; i < lines.length; i++) {
+            const line = lines[i];
+            
+            for (const char of line) {
+                if (char === '{') {
+                    braceCount++;
+                    foundOpenBrace = true;
+                } else if (char === '}') {
+                    braceCount--;
+                    
+                    if (foundOpenBrace && braceCount === 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        
+        return startIndex; // Fallback if no matching brace found
+    }
+
+    /**
+     * Find preceding comments (JSDoc, block comments, etc.)
+     */
+    private findPrecedingComments(lines: string[], startIndex: number): number {
+        let commentStart = startIndex;
+        
+        for (let i = startIndex - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            
+            // Skip empty lines
+            if (line === '') {
+                continue;
+            }
+            
+            // Check for various comment patterns
+            if (line.startsWith('//') ||           // Single line comments
+                line.startsWith('/*') ||           // Block comment start
+                line.includes('*/') ||             // Block comment end
+                line.startsWith('*') ||            // JSDoc continuation
+                line.startsWith('#') ||            // Python comments
+                line.startsWith('"""') ||          // Python docstrings
+                line.startsWith("'''")) {          // Python docstrings
+                commentStart = i;
+                continue;
+            }
+            
+            // Stop at non-comment content
+            break;
+        }
+        
+        return commentStart;
+    }
+
+    /**
+     * Create chunks based on symbol boundaries (fallback)
      */
     private createSymbolBasedChunks(
         content: string,
@@ -348,14 +640,6 @@ export class IndexingOrchestrator {
         return groups;
     }
 
-    private async determineIndexingMethod(request: IndexingRequest): Promise<'full' | 'incremental'> {
-        if (request.force) return 'full';
-        if (request.enableIncrementalUpdate === false) return 'full';
-        
-        const hasExistingIndex = await this.incrementalIndexer.hasExistingIndex(request.codebasePath);
-        return hasExistingIndex ? 'incremental' : 'full';
-    }
-
     private async applyContentFiltering(files: string[], codebasePath: string): Promise<string[]> {
         const filtered: string[] = [];
         
@@ -379,33 +663,176 @@ export class IndexingOrchestrator {
     }
 
 
-    private createNoUpdateResult(request: IndexingRequest, startTime: number): IndexingResult {
-        return {
-            success: true,
-            metadata: {
-                codebasePath: request.codebasePath,
-                namespace: this.generateNamespace(request.codebasePath),
-                totalFiles: 0,
-                totalChunks: 0,
-                totalSymbols: 0,
-                indexingTime: Date.now() - startTime,
-                indexingMethod: 'incremental',
-                features: {
-                    astExtraction: true,
-                    contentFiltering: request.enableContentFiltering !== false,
-                    dependencyAnalysis: request.enableDependencyAnalysis !== false,
-                    incrementalUpdate: true
-                }
-            },
-            chunks: [],
-            errors: []
-        };
-    }
 
     private generateNamespace(codebasePath: string): string {
         const normalized = path.resolve(codebasePath);
         const hash = crypto.createHash('md5').update(normalized).digest('hex');
         return `mcp_${hash.substring(0, 8)}`;
+    }
+
+    /**
+     * Create sensible fallback chunks when semantic parsing fails
+     * Unlike the broken single-line approach, this creates larger, meaningful chunks
+     */
+    private createFallbackChunks(
+        content: string,
+        filePath: string,
+        relativePath: string,
+        language: string
+    ): CodeChunk[] {
+        const lines = content.split('\n');
+        const chunks: CodeChunk[] = [];
+        const chunkSize = 100; // 100 lines per chunk (not 1!)
+        
+        for (let i = 0; i < lines.length; i += chunkSize) {
+            const startLine = i + 1;
+            const endLine = Math.min(i + chunkSize, lines.length);
+            const chunkLines = lines.slice(i, endLine);
+            const chunkContent = chunkLines.join('\n');
+            
+            // Skip empty chunks
+            if (!chunkContent.trim()) continue;
+            
+            chunks.push({
+                id: this.generateChunkId(filePath, startLine, chunkContent),
+                content: chunkContent,
+                filePath,
+                relativePath,
+                startLine,
+                endLine,
+                language,
+                symbols: [], // No symbols for fallback chunks
+                imports: [] // No imports for fallback chunks
+            });
+        }
+        
+        return chunks;
+    }
+
+    /**
+     * Expand symbol to include complete logical unit (function body, class body, etc.)
+     * This provides simple but effective boundary expansion for symbols
+     */
+    private expandSymbolToLogicalUnit(
+        symbol: any,
+        lines: string[],
+        content: string
+    ): { startLine: number; endLine: number; symbolContent: string } {
+        const declarationLine = symbol.startLine - 1; // Convert to 0-based
+
+        if (declarationLine < 0 || declarationLine >= lines.length) {
+            const fallbackContent = lines[symbol.startLine - 1] || '';
+            return { 
+                startLine: symbol.startLine, 
+                endLine: symbol.startLine, 
+                symbolContent: fallbackContent 
+            };
+        }
+
+        const line = lines[declarationLine].trim();
+        let startIdx = declarationLine;
+        let endIdx = declarationLine;
+
+        // Find preceding comments
+        while (startIdx > 0) {
+            const prevLine = lines[startIdx - 1].trim();
+            if (prevLine === '' || prevLine.startsWith('//') || prevLine.startsWith('/*') || 
+                prevLine.startsWith('*') || prevLine.includes('*/')) {
+                startIdx--;
+            } else {
+                break;
+            }
+        }
+
+        // Expand based on symbol type
+        if (symbol.type === 'class' || symbol.type === 'interface') {
+            endIdx = this.findBlockEnd(declarationLine, lines);
+        } else if (symbol.type === 'function' || line.includes('=>')) {
+            if (line.includes('{')) {
+                endIdx = this.findBlockEnd(declarationLine, lines);
+            } else {
+                // Simple arrow function or single line
+                endIdx = this.findStatementEnd(declarationLine, lines);
+            }
+        } else {
+            // Variable, type, etc. - find statement end
+            endIdx = this.findStatementEnd(declarationLine, lines);
+        }
+
+        const symbolContent = lines.slice(startIdx, endIdx + 1).join('\n');
+        return { 
+            startLine: startIdx + 1,  // Convert back to 1-based
+            endLine: endIdx + 1, 
+            symbolContent 
+        };
+    }
+
+    /**
+     * Find block end using brace matching
+     */
+    private findBlockEnd(startLineIndex: number, lines: string[]): number {
+        let braceCount = 0;
+        let foundOpenBrace = false;
+        
+        for (let i = startLineIndex; i < lines.length; i++) {
+            const line = lines[i];
+            
+            for (const char of line) {
+                if (char === '{') {
+                    braceCount++;
+                    foundOpenBrace = true;
+                } else if (char === '}') {
+                    braceCount--;
+                    if (foundOpenBrace && braceCount === 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        
+        return Math.min(startLineIndex + 50, lines.length - 1);
+    }
+
+    /**
+     * Find statement end (for variables, simple functions, etc.)
+     */
+    private findStatementEnd(startLineIndex: number, lines: string[]): number {
+        let parenCount = 0;
+        let braceCount = 0;
+        let bracketCount = 0;
+        
+        for (let i = startLineIndex; i < lines.length; i++) {
+            const line = lines[i];
+            
+            // Count brackets
+            for (const char of line) {
+                switch (char) {
+                    case '(': parenCount++; break;
+                    case ')': parenCount--; break;
+                    case '{': braceCount++; break;
+                    case '}': braceCount--; break;
+                    case '[': bracketCount++; break;
+                    case ']': bracketCount--; break;
+                }
+            }
+            
+            // Check if statement is complete
+            const trimmedLine = line.trim();
+            if ((parenCount === 0 && braceCount === 0 && bracketCount === 0) &&
+                (trimmedLine.endsWith(';') || trimmedLine.endsWith('}') || 
+                 trimmedLine.endsWith(');'))) {
+                return i;
+            }
+            
+            // Safety: stop at next declaration or max lines
+            if (i > startLineIndex && 
+                (trimmedLine.match(/^(const|let|var|function|class|interface|type)\s+/) ||
+                 i - startLineIndex > 20)) {
+                return i - 1;
+            }
+        }
+        
+        return Math.min(startLineIndex + 20, lines.length - 1);
     }
 
     private generateChunkId(filePath: string, startLine: number, content: string): string {

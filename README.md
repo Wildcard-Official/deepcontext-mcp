@@ -14,7 +14,8 @@ A comprehensive Model Context Protocol (MCP) server by **Wildcard Corporation** 
 - **Traditional MCP Tools**: Direct tool calls for programmatic access
 
 ### 🧠 **Advanced Intelligence**
-- **AST-aware symbol chunking** - Intelligent code chunking at function/class boundaries
+- **Tree-sitter semantic chunking** - AST-based code chunking creating meaningful units (complete functions, classes, interfaces)
+- **Smart token limit handling** - Automatic content truncation with intelligent boundary detection for API limits
 - **Content quality filtering** - Excludes test files, generated code, and low-quality content
 - **Dependency graph analysis** - Cross-file relationship mapping and context expansion
 - **Incremental indexing** - Only re-indexes changed files and dependencies
@@ -283,20 +284,42 @@ graph TD
 
 ## 🛠️ Development
 
-### Running Tests
-```bash
-# Test core components
-node test-core-components.js
-
-# Test complete integration
-node test-complete-integration.js
-
-# Test enhanced interface
-node test-enhanced-integration.js
+### Project Structure
+```
+├── src/                    # Source code
+│   ├── core/              # Core indexing and search logic
+│   ├── services/          # Search and utility services  
+│   ├── utils/             # Utilities (Logger, FileUtils, etc.)
+│   └── types/             # TypeScript type definitions
+├── tests/                 # Essential test files
+├── scripts/               # Utility scripts
+└── dist/                  # Compiled JavaScript output
 ```
 
-### Architecture Documentation
-See `ARCHITECTURE-SUMMARY.md` for detailed technical architecture documentation.
+### Running Tests
+```bash
+# Set environment variables
+export JINA_API_KEY="your_jina_api_key"
+export TURBOPUFFER_API_KEY="your_turbopuffer_key"
+
+# Test semantic chunking quality
+node tests/final-chunking-validation.mjs
+
+# Test search integration end-to-end
+node tests/test-improved-search-quality.mjs
+
+# Test search result quality directly
+node tests/test-search-results-direct.mjs
+
+# Test MCP server functionality  
+node tests/test-mcp-tools-directly.mjs
+```
+
+### Key Components
+- **TreeSitterChunkExtractor** - AST-based semantic code chunking
+- **HybridSearchService** - Vector + BM25 search fusion
+- **StandaloneCodexMcp** - Main MCP server integration
+- **IndexingOrchestrator** - Coordinates the indexing pipeline
 
 ## 🎯 What Makes This Special
 

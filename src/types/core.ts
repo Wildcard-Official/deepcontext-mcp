@@ -65,6 +65,10 @@ export interface CodeChunk {
     exports?: ExportInfo[];
     dependencies?: string[];
     contextWindow?: number;
+    score?: number;
+    connections?: any;
+    originalScore?: number;
+    reranked?: boolean;
 }
 
 export interface SymbolInfo {

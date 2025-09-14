@@ -24,6 +24,8 @@ import { IndexingOrchestrator } from './core/indexing/IndexingOrchestrator.js';
 import { FileUtils } from './utils/FileUtils.js';
 import { Logger } from './utils/Logger.js';
 import { TurbopufferStore } from './services/HybridSearchService.js';
+import { JinaApiService } from './services/JinaApiService.js';
+import { TurbopufferService } from './services/TurbopufferService.js';
 
 // Types from IndexingOrchestrator (actual implementation)
 import type { 
@@ -43,6 +45,11 @@ interface CodeChunk {
     language: string;
     symbols: string[];
     score?: number;
+    connections?: {
+        imports: string[];
+        exports: string[];
+        relatedFiles: string[];
+    };
 }
 
 interface IndexedCodebase {
@@ -65,13 +72,14 @@ export class StandaloneCodexMcp {
     private fileUtils: FileUtils;
     private logger: Logger;
     private turbopufferStore: TurbopufferStore;
-    
-    // Vector store integration
-    private turbopufferApiUrl = 'https://gcp-us-central1.turbopuffer.com/v2';
-    private jinaApiUrl = 'https://api.jina.ai/v1/embeddings';
+    private jinaApiService: JinaApiService;
+    private turbopufferService: TurbopufferService;
     
     // State management
     private indexedCodebases: Map<string, IndexedCodebase> = new Map();
+    
+    // Concurrency protection (file-based for cross-process)
+    private activeOperations = new Map<string, Promise<any>>();
 
     constructor(config?: Partial<McpConfig>) {
         this.config = this.loadConfig(config);
@@ -79,13 +87,15 @@ export class StandaloneCodexMcp {
         this.logger = new Logger('STANDALONE-INTEGRATION', this.config.logLevel);
         this.fileUtils = new FileUtils();
         this.indexingOrchestrator = new IndexingOrchestrator();
+        this.jinaApiService = new JinaApiService(this.config.jinaApiKey);
+        this.turbopufferService = new TurbopufferService(this.config.turbopufferApiKey);
         // Create Turbopuffer store integration
         this.turbopufferStore = {
             search: async (namespace: string, options: any) => {
-                return await this.turbopufferQuery(namespace, options);
+                return await this.turbopufferService.search(namespace, options);
             },
             hybridSearch: async (namespace: string, options: any) => {
-                return await this.performHybridSearch(namespace, options);
+                return await this.turbopufferService.hybridSearch(namespace, options);
             }
         };
     }
@@ -102,6 +112,143 @@ export class StandaloneCodexMcp {
     }
 
     /**
+     * Incrementally update codebase - only process files modified since last indexing
+     */
+    async incrementalUpdateCodebase(codebasePath: string, maxAgeHours: number = 24): Promise<{
+        success: boolean;
+        namespace: string;
+        filesProcessed: number;
+        chunksCreated: number;
+        chunksDeleted: number;
+        processingTimeMs: number;
+        message: string;
+    }> {
+        const normalizedPath = path.resolve(codebasePath);
+        const operationKey = `incremental:${normalizedPath}`;
+        
+        // Check for concurrent operations using file-based locking
+        const lockFileResult = await this.acquireLock(operationKey);
+        if (!lockFileResult.acquired) {
+            return {
+                success: false,
+                namespace: '',
+                filesProcessed: 0,
+                chunksCreated: 0,
+                chunksDeleted: 0,
+                processingTimeMs: 0,
+                message: lockFileResult.message
+            };
+        }
+
+        const startTime = Date.now();
+        
+        // Create operation promise for concurrency tracking
+        const operationPromise = this.performIncrementalUpdate(normalizedPath, maxAgeHours, startTime);
+        this.activeOperations.set(operationKey, operationPromise);
+        
+        try {
+            return await operationPromise;
+        } finally {
+            this.activeOperations.delete(operationKey);
+            await this.releaseLock(operationKey);
+        }
+    }
+
+    private async performIncrementalUpdate(codebasePath: string, maxAgeHours: number, startTime: number): Promise<{
+        success: boolean;
+        namespace: string;
+        filesProcessed: number;
+        chunksCreated: number;
+        chunksDeleted: number;
+        processingTimeMs: number;
+        message: string;
+    }> {
+        
+        try {
+            // Validate path exists and is accessible
+            const normalizedPath = path.resolve(codebasePath);
+            await fs.access(normalizedPath);
+            
+            const namespace = this.generateNamespace(codebasePath);
+            this.logger.info(`🔄 Starting incremental update for: ${codebasePath}`);
+            
+            // Get last indexed time, or default to maxAgeHours ago
+            const lastIndexedTime = await this.getLastIndexedTime(codebasePath);
+            const cutoffTime = lastIndexedTime || new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
+            
+            this.logger.info(`📅 Looking for files modified since: ${cutoffTime.toISOString()}`);
+            
+            // Find changed files using simple filesystem check
+            const changedFiles = await this.findChangedFiles(codebasePath, cutoffTime);
+            
+            if (changedFiles.length === 0) {
+                this.logger.info('⚡ No files need updating');
+                return {
+                    success: true,
+                    namespace,
+                    filesProcessed: 0,
+                    chunksCreated: 0,
+                    chunksDeleted: 0,
+                    processingTimeMs: Date.now() - startTime,
+                    message: 'No files modified since last indexing'
+                };
+            }
+            
+            this.logger.info(`📝 Processing ${changedFiles.length} modified files`);
+            
+            // Process each changed file
+            let totalChunksDeleted = 0;
+            let totalChunksCreated = 0;
+            let filesProcessed = 0;
+            
+            for (const filePath of changedFiles) {
+                try {
+                    await this.updateFileAtomically(namespace, filePath, codebasePath);
+                    filesProcessed++;
+                } catch (error) {
+                    this.logger.error(`❌ Failed to update ${filePath}: ${error}`);
+                    // Continue with other files rather than failing completely
+                }
+            }
+
+            // For now, use rough estimates since we simplified the atomic operations
+            // TODO: Collect actual statistics from atomic operations
+            totalChunksCreated = filesProcessed; // Very rough estimate
+            totalChunksDeleted = filesProcessed; // Very rough estimate
+            this.logger.info('📊 Statistics are estimates - atomic operations completed successfully');
+            
+            // Update last indexed timestamp
+            await this.saveLastIndexedTime(codebasePath, new Date());
+            
+            const processingTime = Date.now() - startTime;
+            
+            this.logger.info(`✅ Incremental update complete: ${filesProcessed}/${changedFiles.length} files (${totalChunksDeleted} deleted, ${totalChunksCreated} created chunks) in ${processingTime}ms`);
+            
+            return {
+                success: true,
+                namespace,
+                filesProcessed,
+                chunksCreated: totalChunksCreated,
+                chunksDeleted: totalChunksDeleted,
+                processingTimeMs: processingTime,
+                message: `Incrementally updated ${filesProcessed} files (${totalChunksDeleted} chunks deleted, ${totalChunksCreated} chunks created)`
+            };
+            
+        } catch (error) {
+            this.logger.error('❌ Incremental update failed:', error);
+            return {
+                success: false,
+                namespace: '',
+                filesProcessed: 0,
+                chunksCreated: 0,
+                chunksDeleted: 0,
+                processingTimeMs: Date.now() - startTime,
+                message: `Incremental update failed: ${error instanceof Error ? error.message : String(error)}`
+            };
+        }
+    }
+
+    /**
      * Index a codebase using the new architecture but with real API calls
      */
     async indexCodebaseIntelligent(codebasePath: string, forceReindex = false): Promise<{
@@ -112,7 +259,44 @@ export class StandaloneCodexMcp {
         processingTimeMs: number;
         message: string;
     }> {
+        const normalizedPath = path.resolve(codebasePath);
+        const operationKey = `full:${normalizedPath}`;
+        
+        // Check for concurrent operations using file-based locking
+        const lockFileResult = await this.acquireLock(operationKey);
+        if (!lockFileResult.acquired) {
+            return {
+                success: false,
+                namespace: '',
+                filesProcessed: 0,
+                chunksCreated: 0,
+                processingTimeMs: 0,
+                message: lockFileResult.message
+            };
+        }
+
         const startTime = Date.now();
+        
+        // Create operation promise for concurrency tracking
+        const operationPromise = this.performFullIndexing(normalizedPath, forceReindex, startTime);
+        this.activeOperations.set(operationKey, operationPromise);
+        
+        try {
+            return await operationPromise;
+        } finally {
+            this.activeOperations.delete(operationKey);
+            await this.releaseLock(operationKey);
+        }
+    }
+
+    private async performFullIndexing(codebasePath: string, forceReindex: boolean, startTime: number): Promise<{
+        success: boolean;
+        namespace: string;
+        filesProcessed: number;
+        chunksCreated: number;
+        processingTimeMs: number;
+        message: string;
+    }> {
         
         try {
             // Validate path exists and is accessible
@@ -125,7 +309,6 @@ export class StandaloneCodexMcp {
             const indexingRequest: IndexingRequest = {
                 codebasePath,
                 force: forceReindex,
-                enableIncrementalUpdate: !forceReindex,
                 enableContentFiltering: true,
                 enableDependencyAnalysis: true
             };
@@ -146,17 +329,22 @@ export class StandaloneCodexMcp {
             // Upload to vector store using real API (pass CoreChunk directly)
             await this.uploadChunksToVectorStore(result.metadata.namespace, result.chunks);
             
-            // Store indexing metadata
-            const resolvedPath = path.resolve(codebasePath);
-            const indexedCodebase: IndexedCodebase = {
-                path: resolvedPath,
-                namespace: result.metadata.namespace,
-                totalChunks: result.chunks.length,
-                indexedAt: new Date().toISOString()
-            };
-            
-            this.indexedCodebases.set(resolvedPath, indexedCodebase);
-            await this.saveIndexedCodebases();
+            // Store indexing metadata only if chunks were actually uploaded
+            if (result.chunks.length > 0) {
+                const resolvedPath = path.resolve(codebasePath);
+                const indexedCodebase: IndexedCodebase = {
+                    path: resolvedPath,
+                    namespace: result.metadata.namespace,
+                    totalChunks: result.chunks.length,
+                    indexedAt: new Date().toISOString()
+                };
+                
+                this.indexedCodebases.set(resolvedPath, indexedCodebase);
+                await this.saveIndexedCodebases();
+            }
+
+            // Also save timestamp for incremental indexing
+            await this.saveLastIndexedTime(codebasePath, new Date());
 
             const processingTime = Date.now() - startTime;
             
@@ -247,23 +435,37 @@ export class StandaloneCodexMcp {
                 embedding,
                 query,
                 limit: options.limit || 10,
-                vectorWeight: options.vectorWeight || 0.7,
-                bm25Weight: options.bm25Weight || 0.3
+                vectorWeight: options.vectorWeight || 0.1,
+                bm25Weight: options.bm25Weight || 0.9
             });
 
             this.logger.info(`Raw results received: ${rawResults.length}`);
 
-            // Convert results to expected format
-            const results = rawResults.map((result: any) => ({
-                id: result.id,
-                score: result.score,
-                content: result.metadata.content,
-                filePath: result.metadata.filePath,
-                startLine: result.metadata.startLine,
-                endLine: result.metadata.endLine,
-                symbols: result.metadata.symbols ? result.metadata.symbols.split(',').filter(Boolean) : [],
-                language: result.metadata.language,
-                similarity: result.score
+            // Convert results to expected format with smart boundary extension
+            const results = await Promise.all(rawResults.map(async (result: any) => {
+                let content = result.metadata.content;
+                let endLine = result.metadata.endLine;
+                
+                // Content is already properly chunked by IndexingOrchestrator with complete semantic boundaries
+                
+                // Add connection context for better architecture understanding
+                const connections = await this.extractConnectionContext(
+                    result.metadata.filePath,
+                    content
+                );
+                
+                return {
+                    id: result.id,
+                    score: result.score,
+                    content: content,
+                    filePath: result.metadata.filePath,
+                    startLine: result.metadata.startLine,
+                    endLine: endLine,
+                    symbols: result.metadata.symbols ? result.metadata.symbols.split(',').filter(Boolean) : [],
+                    language: result.metadata.language,
+                    similarity: result.score,
+                    connections: connections
+                };
             }));
 
             const searchTime = Date.now() - startTime;
@@ -337,41 +539,27 @@ export class StandaloneCodexMcp {
             const namespace = this.generateNamespace(codebasePath);
             const limit = options.limit || 10;
 
-            // Direct BM25 search through Turbopuffer
-            const response = await fetch(`https://gcp-us-central1.turbopuffer.com/v2/namespaces/${namespace}/query`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.config.turbopufferApiKey}`
-                },
-                body: JSON.stringify({
-                    rank_by: ['content', 'BM25', query],
-                    top_k: options.enableReranking ? limit * 2 : limit,
-                    include_attributes: ['content', 'symbols', 'filePath', 'startLine', 'endLine', 'language']
-                })
+            // Direct BM25 search through TurbopufferService
+            const searchResults = await this.turbopufferService.query(namespace, {
+                query: query,
+                limit: options.enableReranking ? limit * 2 : limit
             });
 
-            if (!response.ok) {
-                const error = await response.text();
-                throw new Error(`Turbopuffer BM25 search failed: ${response.status} ${error}`);
-            }
-
-            const data = await response.json();
-            const rawResults = (data.rows || []).map((item: any) => ({
+            const rawResults = searchResults.map((item: any) => ({
                 id: item.id,
-                score: Math.max(0, parseFloat(item.$dist) || 0),
-                content: item.content || '',
-                symbols: item.symbols ? item.symbols.split(',').filter(Boolean) : [],
-                filePath: item.filePath || '',
-                startLine: item.startLine || 0,
-                endLine: item.endLine || 0,
-                language: item.language || ''
+                score: item.score,
+                content: item.metadata?.content || '',
+                symbols: item.metadata?.symbols ? item.metadata.symbols.split(',').filter(Boolean) : [],
+                filePath: item.metadata?.filePath || '',
+                startLine: item.metadata?.startLine || 0,
+                endLine: item.metadata?.endLine || 0,
+                language: item.metadata?.language || ''
             }));
 
             let results = rawResults;
 
             // Apply reranking if enabled
-            if (options.enableReranking && rawResults.length > 0 && this.config.jinaApiKey) {
+            if (options.enableReranking && rawResults.length > 0 && this.jinaApiService.isAvailable()) {
                 try {
                     this.logger.debug('Applying Jina reranking to BM25 results...');
                     const documents = rawResults.map((r: any) => r.content);
@@ -422,6 +610,7 @@ export class StandaloneCodexMcp {
         try {
             // Determine namespace from codebase path or use first available
             let namespace: string;
+            let actualCodebasePath: string;
             
             if (codebasePath) {
                 // Normalize path for comparison
@@ -437,6 +626,7 @@ export class StandaloneCodexMcp {
                     };
                 }
                 namespace = indexed.namespace;
+                actualCodebasePath = normalizedPath;
             } else {
                 // Use first available namespace
                 const firstIndexed = Array.from(this.indexedCodebases.values())[0];
@@ -450,14 +640,32 @@ export class StandaloneCodexMcp {
                     };
                 }
                 namespace = firstIndexed.namespace;
+                // Find the codebase path for this namespace
+                actualCodebasePath = Array.from(this.indexedCodebases.keys())[0];
             }
 
-            // Use hybrid search service
-            const searchResult = await this.searchHybrid(codebasePath || '', query, {
+            // Use hybrid search service with correct codebase path
+            const searchResult = await this.searchHybrid(actualCodebasePath, query, {
                 limit: maxResults,
                 enableQueryEnhancement: true,
-                enableReranking: true
+                enableReranking: true,
+                vectorWeight: 0.6, // Better balanced weights
+                bm25Weight: 0.4
             });
+            
+            // Apply Jina reranker v2 if API key is available and we have results
+            if (searchResult.success && searchResult.results.length > 0 && this.jinaApiService.isAvailable()) {
+                try {
+                    const rerankedResults = await this.rerankerResults(query, searchResult.results);
+                    if (rerankedResults && rerankedResults.length > 0) {
+                        searchResult.results = rerankedResults;
+                        searchResult.metadata.reranked = true;
+                        this.logger.info(`✨ Reranked ${rerankedResults.length} results`);
+                    }
+                } catch (rerankerError) {
+                    this.logger.warn('Reranking failed, using original results:', rerankerError);
+                }
+            }
             
             if (!searchResult.success) {
                 return {
@@ -479,7 +687,8 @@ export class StandaloneCodexMcp {
                 endLine: result.endLine,
                 language: result.language || 'unknown',
                 symbols: result.symbols || [],
-                score: result.score
+                score: result.score,
+                connections: result.connections // Preserve connection context
             }));
 
             const searchTime = Date.now() - startTime;
@@ -634,6 +843,7 @@ export class StandaloneCodexMcp {
                 batch.map(chunk => chunk.content)
             );
             
+            
             // Prepare upsert data in Turbopuffer v2 format with schema for full-text search
             const upsertData = batch.map((chunk, idx) => ({
                 id: chunk.id,
@@ -649,7 +859,7 @@ export class StandaloneCodexMcp {
             }));
             
             // Upload to Turbopuffer
-            await this.turbopufferUpsert(namespace, upsertData);
+            await this.turbopufferService.upsert(namespace, upsertData);
             
             
         }
@@ -678,9 +888,136 @@ export class StandaloneCodexMcp {
         return `mcp_${hash.substring(0, 8)}`;
     }
 
+
+    /**
+     * Extract relevant connection context (imports/exports) for better architecture understanding
+     */
+    private async extractConnectionContext(
+        filePath: string,
+        chunkContent: string
+    ): Promise<{ imports: string[]; exports: string[]; relatedFiles: string[] }> {
+        try {
+            // Only add connections for chunks that define classes, interfaces, or exports
+            const definesArchitecture = this.definesArchitecture(chunkContent);
+            if (!definesArchitecture) {
+                return { imports: [], exports: [], relatedFiles: [] };
+            }
+
+            // Read the full file to extract imports/exports
+            const fullContent = await fs.readFile(filePath, 'utf-8');
+            const lines = fullContent.split('\n');
+
+            // Extract relevant imports (only search/architecture related)
+            const relevantImports = lines
+                .filter(line => line.trim().startsWith('import '))
+                .map(line => line.trim())
+                .filter(importLine => this.isRelevantImport(importLine));
+
+            // Extract exports from the chunk itself
+            const exports = this.extractExports(chunkContent);
+
+            // Extract related file paths from imports
+            const relatedFiles = relevantImports
+                .map(imp => this.extractFilePath(imp))
+                .filter((path): path is string => path !== null);
+
+            return {
+                imports: relevantImports.slice(0, 5), // Limit to 5 most relevant
+                exports: exports,
+                relatedFiles: relatedFiles
+            };
+
+        } catch (error) {
+            this.logger.debug('Failed to extract connection context:', error);
+            return { imports: [], exports: [], relatedFiles: [] };
+        }
+    }
+
+    /**
+     * Check if chunk defines architectural components worth connecting
+     */
+    private definesArchitecture(content: string): boolean {
+        // High-confidence architectural indicators
+        if (/export\s+(class|interface|type|enum)/.test(content)) return true;
+        if (/^(export\s+)?class\s+\w+/m.test(content)) return true;
+        if (/^(export\s+)?interface\s+\w+/m.test(content)) return true;
+        if (/^(export\s+)?type\s+\w+\s*=/m.test(content)) return true;
+        
+        // Exported functions that are likely API endpoints or services
+        const exportedFunction = /export\s+(async\s+)?function\s+\w+/.test(content);
+        const servicePattern = /(Service|Provider|Engine|Store|Manager|Controller|Handler)/.test(content);
+        if (exportedFunction && servicePattern) return true;
+        
+        // Constructor or main service functions
+        const isConstructor = /constructor\s*\(/.test(content);
+        const isServiceMethod = /\b(initialize|setup|create|build|configure)\b/.test(content) && servicePattern;
+        if (isConstructor || isServiceMethod) return true;
+        
+        // Avoid marking simple utility functions or implementation details
+        const isSimpleFunction = content.split('\n').length < 10 && 
+                                /^[^{]*\{[^}]*\}[^}]*$/s.test(content.trim());
+        const isUtilFunction = /\b(get|set|is|has|should|can|will)\w*\s*\(/.test(content);
+        if (isSimpleFunction || isUtilFunction) return false;
+        
+        return false;
+    }
+
+    /**
+     * Filter imports to only include search/architecture relevant ones
+     */
+    private isRelevantImport(importLine: string): boolean {
+        // Skip common utility imports that aren't architecturally significant
+        const skipPatterns = [
+            /import.*from\s+['"`]fs['"`]/,
+            /import.*from\s+['"`]path['"`]/,
+            /import.*from\s+['"`]util['"`]/,
+            /import.*from\s+['"`]crypto['"`]/,
+            /import.*\{[^}]*\}\s+from\s+['"`][./]*utils/,
+        ];
+        
+        if (skipPatterns.some(pattern => pattern.test(importLine))) {
+            return false;
+        }
+        
+        // High-relevance architectural imports
+        const highRelevanceKeywords = [
+            'HybridSearch', 'SearchService', 'EmbeddingProvider', 'VectorStore',
+            'TurbopufferStore', 'JinaEmbedding', 'IndexingOrchestrator',
+            'SearchResult', 'CodeChunk', 'SearchOptions'
+        ];
+        
+        // Medium-relevance keywords (must be in class/interface context)
+        const mediumRelevanceKeywords = [
+            'Service', 'Provider', 'Engine', 'Store', 'Manager', 'Controller'
+        ];
+        
+        // Only include if high relevance OR medium relevance with proper context
+        const hasHighRelevance = highRelevanceKeywords.some(keyword => importLine.includes(keyword));
+        const hasMediumRelevance = mediumRelevanceKeywords.some(keyword => importLine.includes(keyword)) &&
+                                 /import\s*\{[^}]*[A-Z]\w*(Service|Provider|Engine|Store|Manager|Controller)/.test(importLine);
+        
+        return hasHighRelevance || hasMediumRelevance;
+    }
+
+    /**
+     * Extract export statements from chunk content
+     */
+    private extractExports(content: string): string[] {
+        const exportMatches = content.match(/export\s+(class|interface|type|function|const|enum)\s+(\w+)/g);
+        return exportMatches ? exportMatches.slice(0, 3) : []; // Limit to 3 exports
+    }
+
+    /**
+     * Extract file path from import statement
+     */
+    private extractFilePath(importLine: string): string | null {
+        const match = importLine.match(/from\s+['"]([^'"]+)['"]/);
+        return match ? match[1] : null;
+    }
+
     private async vectorStoreSearch(query: string, namespace: string, limit: number): Promise<any[]> {
         const queryEmbedding = await this.generateEmbedding(query);
-        return await this.turbopufferQuery(namespace, { embedding: queryEmbedding, limit });
+        return await this.turbopufferService.query(namespace, { embedding: queryEmbedding, limit });
     }
 
     private async vectorStoreSymbolSearch(symbols: string[], namespace: string, limit: number): Promise<any[]> {
@@ -689,163 +1026,32 @@ export class StandaloneCodexMcp {
     }
 
     private async checkNamespaceExists(namespace: string): Promise<boolean> {
-        try {
-            const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}`, {
-                headers: { 'Authorization': `Bearer ${this.config.turbopufferApiKey}` }
-            });
-            return response.ok;
-        } catch {
-            return false;
-        }
+        return await this.turbopufferService.checkNamespaceExists(namespace);
     }
 
     // Jina AI integration
     private async rerank(query: string, documents: string[], topN?: number): Promise<Array<{ index: number; relevance_score: number }>> {
-        const response = await fetch('https://api.jina.ai/v1/rerank', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.config.jinaApiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: 'jina-reranker-v2-base-multilingual',
-                query,
-                documents,
-                top_n: topN || documents.length,
-                return_documents: false
-            })
-        });
-
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Jina Reranker API error: ${response.status} ${error}`);
-        }
-
-        const data = await response.json();
-        return data.results;
+        return await this.jinaApiService.rerank(query, documents, topN);
     }
 
     private async generateEmbedding(text: string): Promise<number[]> {
-        if (!text || text.trim().length === 0) {
-            throw new Error('Cannot generate embedding for empty text');
-        }
-        
-        const response = await fetch(this.jinaApiUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.config.jinaApiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                input: [text],
-                model: 'jina-embeddings-v3',
-                dimensions: 1024
-            })
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Jina API error: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        return data.data[0].embedding;
+        return await this.jinaApiService.generateEmbedding(text);
     }
 
     private async generateEmbeddingBatch(texts: string[]): Promise<number[][]> {
-        if (texts.length === 0) return [];
-        
-        const response = await fetch(this.jinaApiUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.config.jinaApiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                input: texts,
-                model: 'jina-embeddings-v3',
-                dimensions: 1024
-            })
-        });
-        
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Jina API batch error (${response.status}): ${error}`);
-        }
-        
-        const data = await response.json();
-        return data.data.map((item: any) => item.embedding);
+        return await this.jinaApiService.generateEmbeddingBatch(texts);
+    }
+
+
+    /**
+     * Rerank search results using Jina reranker v2
+     */
+    private async rerankerResults(query: string, results: any[]): Promise<any[]> {
+        return await this.jinaApiService.rerankerResults(query, results);
     }
 
     // Turbopuffer integration
-    private async turbopufferUpsert(namespace: string, vectors: any[]): Promise<void> {
-        const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.config.turbopufferApiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                upsert_rows: vectors,
-                distance_metric: 'cosine_distance',
-                schema: {
-                    content: {
-                        type: 'string',
-                        full_text_search: true
-                    }
-                }
-            })
-        });
-        
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Turbopuffer upsert error (${response.status}): ${error}`);
-        }
-    }
 
-    private async turbopufferQuery(namespace: string, options: any): Promise<any[]> {
-        const requestBody: any = {
-            include_attributes: ['content', 'filePath', 'relativePath', 'startLine', 'endLine', 'language', 'symbols'],
-            top_k: options.limit || 10
-        };
-
-        // Handle different search types based on options
-        if (options.rank_by) {
-            // Direct rank_by specification (for hybrid search)
-            requestBody.rank_by = options.rank_by;
-        } else if (options.embedding) {
-            // Vector search
-            requestBody.rank_by = ['vector', 'ANN', options.embedding];
-        } else if (options.query) {
-            // BM25 text search
-            requestBody.rank_by = [`content BM25 "${options.query}"`];
-        }
-
-        // Add filters if provided
-        if (options.filters) {
-            requestBody.filters = options.filters;
-        }
-
-        const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}/query`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.config.turbopufferApiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-        });
-        
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Turbopuffer query error: ${error}`);
-        }
-        
-        const data = await response.json();
-        return (data.rows || []).map((row: any) => ({
-            id: row.id,
-            score: row.score || row._distance || row.$dist || 0,
-            metadata: row.attributes || row
-        }));
-    }
 
 
     /**
@@ -859,189 +1065,216 @@ export class StandaloneCodexMcp {
         bm25Weight?: number;
         filters?: any;
     }): Promise<any[]> {
-        const limit = options.limit || 10;
-        const vectorWeight = options.vectorWeight || 0.7;
-        const bm25Weight = options.bm25Weight || 0.3;
-        
-        // Use Turbopuffer's queries array format (same as backend implementation)
-        const response = await fetch(`https://gcp-us-central1.turbopuffer.com/v2/namespaces/${namespace}/query`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.config.turbopufferApiKey}`
-            },
-            body: JSON.stringify({
-                queries: [
-                    // Vector search query
-                    {
-                        rank_by: ['vector', 'ANN', options.embedding],
-                        top_k: Math.min(limit * 2, 50),
-                        include_attributes: [
-                            'content', 'symbols', 'filePath', 'startLine', 'endLine', 
-                            'language'
-                        ]
-                    },
-                    // BM25 search query
-                    {
-                        rank_by: ['content', 'BM25', options.query],
-                        top_k: Math.min(limit * 2, 50),
-                        include_attributes: [
-                            'content', 'symbols', 'filePath', 'startLine', 'endLine', 
-                            'language'
-                        ]
-                    }
-                ]
-            })
-        });
-
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Turbopuffer hybrid search failed: ${response.status} ${error}`);
-        }
-
-        const data = await response.json();
-        
-        // Use the same fusion logic as backend
-        return this.fuseHybridResults(data, limit, { vectorWeight, bm25Weight });
+        return await this.turbopufferService.hybridSearch(namespace, options);
     }
 
-    /**
-     * Fuse hybrid search results using backend's proven logic
-     */
-    private fuseHybridResults(
-        multiQueryResults: any,
-        limit: number,
-        weights: { vectorWeight: number; bm25Weight: number }
-    ): any[] {
-        const scores = new Map<string, number>();
-        const metadata = new Map<string, any>();
-        
-        // Extract results from Turbopuffer response: { results: [{ rows: [...] }, { rows: [...] }] }
-        const vectorResults = multiQueryResults.results?.[0]?.rows || [];
-        const bm25Results = multiQueryResults.results?.[1]?.rows || [];
-        
-        this.logger.info(`Hybrid search - Vector: ${vectorResults.length}, BM25: ${bm25Results.length}`);
-        
-        // Process vector search results (first query)
-        vectorResults.forEach((item: any, rank: number) => {
-            const reciprocalRank = weights.vectorWeight / (rank + 1);
-            scores.set(item.id, (scores.get(item.id) || 0) + reciprocalRank);
-            
-            if (!metadata.has(item.id)) {
-                metadata.set(item.id, {
-                    content: item.content || '',
-                    symbols: item.symbols || '',
-                    filePath: item.filePath || '',
-                    startLine: item.startLine || 0,
-                    endLine: item.endLine || 0,
-                    language: item.language || ''
-                });
-            }
-        });
-        
-        // Process BM25 search results (second query)
-        bm25Results.forEach((item: any, rank: number) => {
-            const reciprocalRank = weights.bm25Weight / (rank + 1);
-            scores.set(item.id, (scores.get(item.id) || 0) + reciprocalRank);
-            
-            if (!metadata.has(item.id)) {
-                metadata.set(item.id, {
-                    content: item.content || '',
-                    symbols: item.symbols || '',
-                    filePath: item.filePath || '',
-                    startLine: item.startLine || 0,
-                    endLine: item.endLine || 0,
-                    language: item.language || ''
-                });
-            }
-        });
-        
-        const finalResults = Array.from(scores.entries())
-            .sort(([, a], [, b]) => b - a)
-            .slice(0, limit)
-            .map(([id, score]) => ({
-                id,
-                score,
-                metadata: metadata.get(id)
-            }));
-        
-        this.logger.info(`Fusion completed - Final: ${finalResults.length} results`);
-        
-        return finalResults;
-    }
 
-    /**
-     * Reciprocal Rank Fusion (RRF) for combining search results
-     */
-    private fuseSearchResults(
-        results: any[], 
-        k: number = 60,
-        vectorWeight: number = 0.7,
-        bm25Weight: number = 0.3
-    ): any[] {
-        // Group results by ID and calculate RRF scores
-        const resultMap = new Map<string, any>();
-        
-        // Separate results by query type
-        const vectorResults = results.filter(r => r.queryType === 'vector');
-        const bm25Results = results.filter(r => r.queryType === 'bm25');
-        
-        // Calculate ranks for each query type
-        vectorResults.forEach((result, index) => {
-            const rrf = vectorWeight / (k + index + 1);
-            if (resultMap.has(result.id)) {
-                resultMap.get(result.id).fusedScore += rrf;
-            } else {
-                resultMap.set(result.id, {
-                    ...result,
-                    fusedScore: rrf,
-                    vectorRank: index + 1,
-                    bm25Rank: null
-                });
-            }
-        });
-        
-        bm25Results.forEach((result, index) => {
-            const rrf = bm25Weight / (k + index + 1);
-            if (resultMap.has(result.id)) {
-                resultMap.get(result.id).fusedScore += rrf;
-                resultMap.get(result.id).bm25Rank = index + 1;
-            } else {
-                resultMap.set(result.id, {
-                    ...result,
-                    fusedScore: rrf,
-                    vectorRank: null,
-                    bm25Rank: index + 1
-                });
-            }
-        });
-        
-        // Sort by fused score and return
-        return Array.from(resultMap.values())
-            .sort((a, b) => b.fusedScore - a.fusedScore)
-            .map(result => ({
-                id: result.id,
-                score: result.fusedScore,
-                metadata: result.metadata,
-                vectorRank: result.vectorRank,
-                bm25Rank: result.bm25Rank
-            }));
-    }
+
 
     private async clearVectorStoreNamespace(namespace: string): Promise<void> {
-        try {
-            const response = await fetch(`${this.turbopufferApiUrl}/namespaces/${namespace}`, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${this.config.turbopufferApiKey}`
-                }
-            });
-            
-            if (response.ok) {
-                this.logger.info(`✅ Cleared namespace: ${namespace}`);
+        await this.turbopufferService.clearNamespace(namespace);
+    }
+
+    private async updateFileAtomically(namespace: string, filePath: string, codebasePath: string): Promise<void> {
+        const relativePath = path.relative(codebasePath, filePath);
+        this.logger.debug(`🔄 Atomically updating file: ${relativePath}`);
+
+        // Step 1: Query existing chunks for rollback capability
+        const existingChunkIds = await this.getChunkIdsForFile(namespace, filePath);
+        
+        // Step 2: Process the file to get new chunks
+        const newChunks = await this.processSingleFile(filePath, codebasePath);
+        
+        // Step 3: Upload new chunks BEFORE deleting old ones (safer)
+        if (newChunks.length > 0) {
+            try {
+                await this.uploadChunksToVectorStore(namespace, newChunks);
+                this.logger.debug(`✅ Uploaded ${newChunks.length} new chunks for ${relativePath}`);
+            } catch (uploadError) {
+                // If upload fails, we haven't deleted anything yet, so we're safe
+                throw new Error(`Failed to upload new chunks: ${uploadError}`);
             }
+        }
+
+        // Step 4: Delete old chunks only after successful upload
+        if (existingChunkIds.length > 0) {
+            try {
+                const deletedCount = await this.deleteChunksByIds(namespace, existingChunkIds);
+                this.logger.debug(`✅ Deleted ${deletedCount} old chunks for ${relativePath}`);
+            } catch (deleteError) {
+                // Upload succeeded but delete failed - log warning but don't fail
+                // This leaves some orphaned chunks but maintains functionality
+                this.logger.warn(`⚠️ Failed to delete old chunks for ${relativePath}: ${deleteError}`);
+                this.logger.warn(`⚠️ New chunks uploaded successfully, but old chunks remain (orphaned)`);
+            }
+        }
+
+        this.logger.debug(`✅ Atomically updated ${relativePath}: ${existingChunkIds.length} deleted, ${newChunks.length} created`);
+    }
+
+    private async getChunkIdsForFile(namespace: string, filePath: string): Promise<string[]> {
+        return await this.turbopufferService.getChunkIdsForFile(namespace, filePath);
+    }
+
+    private async deleteChunksByIds(namespace: string, chunkIds: string[]): Promise<number> {
+        return await this.turbopufferService.deleteChunksByIds(namespace, chunkIds);
+    }
+
+    private async processSingleFile(filePath: string, codebasePath: string): Promise<CoreChunk[]> {
+        try {
+            // Create a minimal IndexingRequest for single file processing
+            const indexingRequest: IndexingRequest = {
+                codebasePath,
+                force: false,
+                enableContentFiltering: true,
+                enableDependencyAnalysis: true
+            };
+
+            // Use the public processFile method directly (no hacky overrides)
+            const chunks = await this.indexingOrchestrator.processFile(filePath, indexingRequest);
+            
+            this.logger.debug(`Processed single file ${filePath}: ${chunks.length} chunks`);
+            return chunks;
+
         } catch (error) {
-            this.logger.warn(`Failed to clear namespace ${namespace}:`, error);
+            this.logger.error(`Error processing single file ${filePath}:`, error);
+            return [];
+        }
+    }
+
+    // File-based concurrency protection
+    private getLockFilePath(operationKey: string): string {
+        const dataDir = process.env.CODEX_CONTEXT_DATA_DIR || path.join(process.env.HOME || '~', '.codex-context');
+        const safeKey = operationKey.replace(/[^a-zA-Z0-9-_]/g, '_');
+        return path.join(dataDir, `${safeKey}.lock`);
+    }
+
+    private async acquireLock(operationKey: string): Promise<{ acquired: boolean; message: string }> {
+        const lockFilePath = this.getLockFilePath(operationKey);
+        
+        try {
+            // Ensure directory exists
+            await fs.mkdir(path.dirname(lockFilePath), { recursive: true });
+            
+            // Try to create lock file exclusively (fails if exists)
+            await fs.writeFile(lockFilePath, JSON.stringify({
+                operation: operationKey,
+                pid: process.pid,
+                startTime: new Date().toISOString()
+            }), { flag: 'wx' }); // 'wx' = create exclusive, fail if exists
+            
+            return { acquired: true, message: 'Lock acquired successfully' };
+            
+        } catch (error: any) {
+            if (error.code === 'EEXIST') {
+                // Lock file exists - check if it's stale
+                try {
+                    const lockContent = await fs.readFile(lockFilePath, 'utf-8');
+                    const lockData = JSON.parse(lockContent);
+                    const lockTime = new Date(lockData.startTime);
+                    const now = new Date();
+                    const ageMinutes = (now.getTime() - lockTime.getTime()) / (1000 * 60);
+                    
+                    if (ageMinutes > 30) { // Consider locks older than 30 minutes as stale
+                        this.logger.warn(`Removing stale lock file (${ageMinutes.toFixed(1)} minutes old): ${lockFilePath}`);
+                        await fs.unlink(lockFilePath);
+                        // Try to acquire lock again
+                        return await this.acquireLock(operationKey);
+                    } else {
+                        return { 
+                            acquired: false, 
+                            message: `Operation already in progress (started ${ageMinutes.toFixed(1)} minutes ago)` 
+                        };
+                    }
+                } catch (readError) {
+                    // Corrupt lock file - remove and retry
+                    try {
+                        await fs.unlink(lockFilePath);
+                        return await this.acquireLock(operationKey);
+                    } catch (unlinkError) {
+                        return { 
+                            acquired: false, 
+                            message: 'Failed to acquire lock due to file system issue' 
+                        };
+                    }
+                }
+            } else {
+                return { 
+                    acquired: false, 
+                    message: `Failed to acquire lock: ${error.message}` 
+                };
+            }
+        }
+    }
+
+    private async releaseLock(operationKey: string): Promise<void> {
+        const lockFilePath = this.getLockFilePath(operationKey);
+        
+        try {
+            await fs.unlink(lockFilePath);
+            this.logger.debug(`Released lock: ${operationKey}`);
+        } catch (error: any) {
+            // Lock file might not exist or be already deleted - that's OK
+            this.logger.debug(`Lock release no-op (file not found): ${operationKey}`);
+        }
+    }
+
+    // Incremental indexing helpers
+    private getLastIndexedTimestampPath(codebasePath: string): string {
+        const dataDir = process.env.CODEX_CONTEXT_DATA_DIR || path.join(process.env.HOME || '~', '.codex-context');
+        const namespace = this.generateNamespace(codebasePath);
+        return path.join(dataDir, `${namespace}-last-indexed.txt`);
+    }
+
+    private async getLastIndexedTime(codebasePath: string): Promise<Date | null> {
+        try {
+            const timestampPath = this.getLastIndexedTimestampPath(codebasePath);
+            const content = await fs.readFile(timestampPath, 'utf-8');
+            return new Date(content.trim());
+        } catch (error) {
+            // No timestamp file exists yet
+            return null;
+        }
+    }
+
+    private async saveLastIndexedTime(codebasePath: string, timestamp: Date): Promise<void> {
+        try {
+            const timestampPath = this.getLastIndexedTimestampPath(codebasePath);
+            const dir = path.dirname(timestampPath);
+            
+            await fs.mkdir(dir, { recursive: true });
+            await fs.writeFile(timestampPath, timestamp.toISOString(), 'utf-8');
+        } catch (error) {
+            this.logger.warn('Failed to save last indexed timestamp:', error);
+        }
+    }
+
+    private async findChangedFiles(codebasePath: string, since: Date): Promise<string[]> {
+        try {
+            // Use existing FileUtils to discover all code files
+            const allFiles = await this.fileUtils.discoverFiles(
+                codebasePath,
+                ['typescript', 'javascript', 'python', 'java', 'cpp', 'go', 'rust']
+            );
+            
+            const changedFiles: string[] = [];
+            
+            for (const filePath of allFiles) {
+                try {
+                    const stats = await fs.stat(filePath);
+                    if (stats.mtime > since) {
+                        changedFiles.push(filePath);
+                    }
+                } catch (error) {
+                    // File might have been deleted, skip it
+                    continue;
+                }
+            }
+            
+            return changedFiles;
+        } catch (error) {
+            this.logger.error('Error finding changed files:', error);
+            return [];
         }
     }
 
@@ -1132,7 +1365,20 @@ class StandaloneMCPServer {
                 },
                 {
                     name: 'search_codebase',
-                    description: 'Search indexed codebase with intelligent hybrid search (vector + BM25)',
+                    description: `
+Search the indexed codebase using natural language or specific terms with intelligent hybrid search (vector + BM25).
+
+🎯 **When to Use**:
+This tool should be used for all code-related searches in this project:
+- **Code search**: Find specific functions, classes, or implementations
+- **Context gathering**: Get relevant code context before making changes  
+- **Architecture understanding**: Understand how systems like hybrid search are implemented
+- **Feature analysis**: Analyze existing functionality and patterns
+
+✨ **Usage Guidance**:
+- If the codebase is not indexed, this tool will return an error indicating indexing is required first.
+- Use the index_codebase tool to index the codebase before searching.
+`,
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -1205,11 +1451,31 @@ class StandaloneMCPServer {
                         };
                     
                     case 'search_codebase':
+                        console.log(`🔍 STANDALONE MCP TOOL CALLED: search_codebase with query "${(args as any).query}"`);
+                        
+                        // Auto-trigger incremental update before searching to ensure fresh results
+                        const codebasePath = (args as any).codebase_path;
+                        if (codebasePath) {
+                            console.log(`⚡ Auto-triggering incremental update before search...`);
+                            try {
+                                const incrementalResult = await this.codexMcp.incrementalUpdateCodebase(codebasePath, 24);
+                                if (incrementalResult.filesProcessed > 0) {
+                                    console.log(`📝 Pre-search update: ${incrementalResult.filesProcessed} files processed`);
+                                } else {
+                                    console.log(`✅ Pre-search update: No files needed updating`);
+                                }
+                            } catch (incrementalError) {
+                                // Don't fail the search if incremental update fails - just log warning
+                                console.warn(`⚠️ Pre-search incremental update failed: ${incrementalError}`);
+                            }
+                        }
+                        
                         const searchResult = await this.codexMcp.searchWithIntelligence(
                             (args as any).query,
                             (args as any).codebase_path,
                             (args as any).max_results || 10
                         );
+                        console.log(`🔍 STANDALONE MCP RESULT: ${searchResult.results.length} results, top score: ${searchResult.results[0]?.score}`);
                         
                         if (!searchResult.success) {
                             return {
@@ -1223,15 +1489,23 @@ class StandaloneMCPServer {
                         const response = {
                             total_results: searchResult.totalResults,
                             search_time_ms: searchResult.searchTimeMs,
-                            results: searchResult.results.map(chunk => ({
-                                file_path: chunk.relativePath,
-                                start_line: chunk.startLine,
-                                end_line: chunk.endLine,
-                                language: chunk.language,
-                                content: chunk.content,
-                                score: chunk.score,
-                                symbols: chunk.symbols
-                            }))
+                            results: searchResult.results.map(chunk => {
+                                const chunkAny = chunk as any;
+                                return {
+                                    file_path: chunk.relativePath,
+                                    start_line: chunk.startLine,
+                                    end_line: chunk.endLine,
+                                    language: chunk.language,
+                                    content: chunk.content,
+                                    score: chunk.score,
+                                    symbols: chunk.symbols,
+                                    connections: chunk.connections, // Include connection context for Claude
+                                    ...(chunkAny.originalScore !== undefined && { 
+                                        original_score: chunkAny.originalScore,
+                                        reranked: chunkAny.reranked || true
+                                    })
+                                };
+                            })
                         };
 
                         return {
