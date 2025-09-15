@@ -51,7 +51,7 @@ export class JinaApiService {
         if (!text || text.trim().length === 0) {
             throw new Error('Cannot generate embedding for empty text');
         }
-        
+
         // Truncate if needed for Jina API limits
         const processedText = this.truncateForJinaApi(text);
         
@@ -81,7 +81,7 @@ export class JinaApiService {
      */
     async generateEmbeddingBatch(texts: string[]): Promise<number[][]> {
         if (texts.length === 0) return [];
-        
+
         // Filter and truncate texts that exceed Jina API limit (8194 tokens ≈ 32KB)
         const processedTexts = texts.map(text => this.truncateForJinaApi(text));
         
@@ -219,7 +219,7 @@ export class JinaApiService {
      * Jina API limit: 8194 tokens (roughly ~32KB of text)
      */
     private truncateForJinaApi(text: string): string {
-        const MAX_CHARS = 32000; // Conservative estimate: ~8000 tokens ≈ 32KB
+        const MAX_CHARS = 20000; // Very conservative estimate: 8194 tokens ≈ 20KB max
         
         if (text.length <= MAX_CHARS) {
             return text;

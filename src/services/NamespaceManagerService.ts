@@ -315,6 +315,56 @@ export class NamespaceManagerService {
     }
 
     /**
+     * Get indexing status for codebases (compatible with IndexingOrchestrator interface)
+     */
+    async getIndexingStatus(codebasePath?: string): Promise<{
+        indexedCodebases: IndexedCodebase[];
+        currentCodebase?: IndexedCodebase;
+        incrementalStats?: any;
+        indexed: boolean;
+        fileCount: number;
+    }> {
+        const indexedList = Array.from(this.indexedCodebases.values());
+
+        let currentCodebase: IndexedCodebase | undefined;
+        let incrementalStats: any;
+
+        if (codebasePath) {
+            try {
+                const normalizedPath = path.resolve(codebasePath);
+                // Check if path exists
+                const fs = await import('fs/promises');
+                await fs.access(normalizedPath);
+                currentCodebase = this.indexedCodebases.get(normalizedPath);
+            } catch (error) {
+                return {
+                    indexedCodebases: indexedList,
+                    indexed: false,
+                    fileCount: 0
+                };
+            }
+
+            if (currentCodebase) {
+                incrementalStats = {
+                    indexingMethod: 'full',
+                    lastIndexed: currentCodebase.indexedAt
+                };
+            }
+        }
+
+        const indexed = codebasePath ? !!currentCodebase : indexedList.length > 0;
+        const fileCount = currentCodebase?.totalChunks || indexedList.reduce((sum, cb) => sum + cb.totalChunks, 0);
+
+        return {
+            indexedCodebases: indexedList,
+            currentCodebase,
+            incrementalStats,
+            indexed,
+            fileCount
+        };
+    }
+
+    /**
      * Validate namespace format
      */
     isValidNamespace(namespace: string): boolean {

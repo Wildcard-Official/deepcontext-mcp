@@ -11,6 +11,7 @@ import { Logger } from '../utils/Logger.js';
 import { FileUtils } from '../utils/FileUtils.js';
 import { IndexingOrchestrator, IndexingRequest } from '../core/indexing/IndexingOrchestrator.js';
 import type { CodeChunk } from '../core/indexing/IndexingOrchestrator.js';
+import { LockService } from './LockService.js';
 
 export interface FileProcessingOptions {
     maxAgeHours?: number;
@@ -37,6 +38,14 @@ export interface LockResult {
     message: string;
 }
 
+export interface FileMetadata {
+    filePath: string;
+    lastModified: Date;
+    size: number;
+    contentHash: string;
+    chunkIds: string[];
+}
+
 export interface ChunkOperations {
     getChunkIdsForFile(namespace: string, filePath: string): Promise<string[]>;
     deleteChunksByIds(namespace: string, chunkIds: string[]): Promise<number>;
@@ -47,7 +56,9 @@ export class FileProcessingService {
     private logger: Logger;
     private fileUtils: FileUtils;
     private indexingOrchestrator: IndexingOrchestrator;
+    private lockService: LockService;
     private activeOperations = new Map<string, Promise<any>>();
+    private fileMetadataCache = new Map<string, Map<string, FileMetadata>>(); // codebasePath -> file metadata
 
     constructor(
         private chunkOperations: ChunkOperations,
@@ -56,6 +67,7 @@ export class FileProcessingService {
         this.logger = new Logger(loggerName);
         this.fileUtils = new FileUtils();
         this.indexingOrchestrator = new IndexingOrchestrator();
+        this.lockService = new LockService(`${loggerName}-LOCK`);
     }
 
     /**
@@ -70,7 +82,7 @@ export class FileProcessingService {
         const operationKey = `incremental:${normalizedPath}`;
         
         // Check for concurrent operations using file-based locking
-        const lockResult = await this.acquireLock(operationKey);
+        const lockResult = await this.lockService.acquireLock(operationKey);
         if (!lockResult.acquired) {
             return {
                 success: false,
@@ -93,7 +105,7 @@ export class FileProcessingService {
             return await operationPromise;
         } finally {
             this.activeOperations.delete(operationKey);
-            await this.releaseLock(operationKey);
+            await this.lockService.releaseLock(operationKey);
         }
     }
 
@@ -153,10 +165,16 @@ export class FileProcessingService {
                     // Continue with other files rather than failing completely
                 }
             }
-            
+
+            // Batch save all file metadata after processing all files
+            if (filesProcessed > 0) {
+                this.logger.debug(`💾 Batch saving metadata for ${filesProcessed} processed files`);
+                await this.saveFileMetadata(codebasePath);
+            }
+
             // Update last indexed timestamp
             await this.saveLastIndexedTime(codebasePath, new Date());
-            
+
             const processingTime = Date.now() - startTime;
             
             this.logger.info(`✅ Incremental update complete: ${filesProcessed}/${changedFiles.length} files (${totalChunksDeleted} deleted, ${totalChunksCreated} created chunks) in ${processingTime}ms`);
@@ -230,6 +248,9 @@ export class FileProcessingService {
             }
         }
 
+        // Update file metadata after successful processing
+        await this.updateFileMetadata(codebasePath, filePath, newChunks.map(chunk => chunk.id));
+
         this.logger.debug(`✅ Atomically updated ${relativePath}: ${chunksDeleted} deleted, ${chunksCreated} created`);
         return { chunksCreated, chunksDeleted };
     }
@@ -264,34 +285,37 @@ export class FileProcessingService {
     }
 
     /**
-     * Find files modified since a given timestamp
+     * Find files with actual content changes using hash-based detection
      */
     async findChangedFiles(
-        codebasePath: string, 
-        since: Date, 
+        codebasePath: string,
+        since: Date,  // Kept for backward compatibility but not used
         options: FileProcessingOptions = {}
     ): Promise<string[]> {
         try {
+            // Load file metadata for this codebase
+            await this.loadFileMetadata(codebasePath);
+
             // Use FileUtils to discover all code files
-            const supportedLanguages = options.supportedLanguages || 
+            const supportedLanguages = options.supportedLanguages ||
                 ['typescript', 'javascript', 'python', 'java', 'cpp', 'go', 'rust'];
-            
+
             const allFiles = await this.fileUtils.discoverFiles(codebasePath, supportedLanguages);
-            
             const changedFiles: string[] = [];
-            
+
             for (const filePath of allFiles) {
                 try {
-                    const stats = await fs.stat(filePath);
-                    if (stats.mtime > since) {
+                    if (await this.isFileModified(codebasePath, filePath)) {
                         changedFiles.push(filePath);
                     }
                 } catch (error) {
-                    // File might have been deleted, skip it
-                    continue;
+                    // If we can't check, assume it's changed
+                    this.logger.debug(`Error checking file ${filePath}, assuming changed:`, error);
+                    changedFiles.push(filePath);
                 }
             }
-            
+
+            this.logger.debug(`Found ${changedFiles.length} changed files out of ${allFiles.length} total files`);
             return changedFiles;
         } catch (error) {
             this.logger.error('Error finding changed files:', error);
@@ -299,83 +323,136 @@ export class FileProcessingService {
         }
     }
 
+
     /**
-     * File-based concurrency control
+     * Hash-based change detection methods
      */
-    private getLockFilePath(operationKey: string): string {
-        const dataDir = process.env.CODEX_CONTEXT_DATA_DIR || path.join(process.env.HOME || '~', '.codex-context');
-        const safeKey = operationKey.replace(/[^a-zA-Z0-9-_]/g, '_');
-        return path.join(dataDir, `${safeKey}.lock`);
+    private async isFileModified(codebasePath: string, filePath: string): Promise<boolean> {
+        const metadata = this.getFileMetadata(codebasePath, filePath);
+
+        if (!metadata) {
+            // File not tracked yet, consider it modified
+            return true;
+        }
+
+        try {
+            const stats = await fs.stat(filePath);
+
+            // Quick check: modification time
+            if (stats.mtime > metadata.lastModified) {
+                // Quick check: file size
+                if (stats.size !== metadata.size) {
+                    return true;
+                }
+
+                // Accurate check: content hash
+                const content = await fs.readFile(filePath, 'utf-8');
+                const currentHash = this.calculateContentHash(content);
+
+                return currentHash !== metadata.contentHash;
+            }
+
+            return false; // File not modified
+        } catch (error) {
+            // File might not exist or be readable
+            return true;
+        }
     }
 
-    private async acquireLock(operationKey: string): Promise<LockResult> {
-        const lockFilePath = this.getLockFilePath(operationKey);
-        
+    private calculateContentHash(content: string): string {
+        return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+    }
+
+    private getFileMetadata(codebasePath: string, filePath: string): FileMetadata | undefined {
+        const codebaseMetadata = this.fileMetadataCache.get(codebasePath);
+        return codebaseMetadata?.get(filePath);
+    }
+
+    private setFileMetadata(codebasePath: string, filePath: string, metadata: FileMetadata): void {
+        if (!this.fileMetadataCache.has(codebasePath)) {
+            this.fileMetadataCache.set(codebasePath, new Map());
+        }
+        this.fileMetadataCache.get(codebasePath)!.set(filePath, metadata);
+    }
+
+    private getFileMetadataPath(codebasePath: string): string {
+        const dataDir = process.env.CODEX_CONTEXT_DATA_DIR || path.join(process.env.HOME || '~', '.codex-context');
+        const pathHash = crypto.createHash('md5').update(codebasePath).digest('hex').substring(0, 8);
+        return path.join(dataDir, `${pathHash}-file-metadata.json`);
+    }
+
+    private async loadFileMetadata(codebasePath: string): Promise<void> {
+        if (this.fileMetadataCache.has(codebasePath)) {
+            return; // Already loaded
+        }
+
+        const metadataPath = this.getFileMetadataPath(codebasePath);
+
+        try {
+            const content = await fs.readFile(metadataPath, 'utf-8');
+            const data = JSON.parse(content);
+
+            const fileMetadata = new Map<string, FileMetadata>();
+            if (Array.isArray(data)) {
+                for (const [filePath, metadata] of data) {
+                    // Convert date string back to Date object
+                    if (metadata.lastModified) {
+                        metadata.lastModified = new Date(metadata.lastModified);
+                    }
+                    fileMetadata.set(filePath, metadata);
+                }
+            }
+
+            this.fileMetadataCache.set(codebasePath, fileMetadata);
+        } catch (error) {
+            // No existing metadata or error reading, start fresh
+            this.fileMetadataCache.set(codebasePath, new Map());
+        }
+    }
+
+    private async saveFileMetadata(codebasePath: string): Promise<void> {
+        const metadataPath = this.getFileMetadataPath(codebasePath);
+        const metadata = this.fileMetadataCache.get(codebasePath);
+
+        if (!metadata) return;
+
         try {
             // Ensure directory exists
-            await fs.mkdir(path.dirname(lockFilePath), { recursive: true });
-            
-            // Try to create lock file exclusively (fails if exists)
-            await fs.writeFile(lockFilePath, JSON.stringify({
-                operation: operationKey,
-                pid: process.pid,
-                startTime: new Date().toISOString()
-            }), { flag: 'wx' }); // 'wx' = create exclusive, fail if exists
-            
-            return { acquired: true, message: 'Lock acquired successfully' };
-            
-        } catch (error: any) {
-            if (error.code === 'EEXIST') {
-                // Lock file exists - check if it's stale
-                try {
-                    const lockContent = await fs.readFile(lockFilePath, 'utf-8');
-                    const lockData = JSON.parse(lockContent);
-                    const lockTime = new Date(lockData.startTime);
-                    const now = new Date();
-                    const ageMinutes = (now.getTime() - lockTime.getTime()) / (1000 * 60);
-                    
-                    if (ageMinutes > 30) { // Consider locks older than 30 minutes as stale
-                        this.logger.warn(`Removing stale lock file (${ageMinutes.toFixed(1)} minutes old): ${lockFilePath}`);
-                        await fs.unlink(lockFilePath);
-                        // Try to acquire lock again
-                        return await this.acquireLock(operationKey);
-                    } else {
-                        return { 
-                            acquired: false, 
-                            message: `Operation already in progress (started ${ageMinutes.toFixed(1)} minutes ago)` 
-                        };
-                    }
-                } catch (readError) {
-                    // Corrupt lock file - remove and retry
-                    try {
-                        await fs.unlink(lockFilePath);
-                        return await this.acquireLock(operationKey);
-                    } catch (unlinkError) {
-                        return { 
-                            acquired: false, 
-                            message: 'Failed to acquire lock due to file system issue' 
-                        };
-                    }
-                }
-            } else {
-                return { 
-                    acquired: false, 
-                    message: `Failed to acquire lock: ${error.message}` 
-                };
-            }
+            await fs.mkdir(path.dirname(metadataPath), { recursive: true });
+
+            // Convert Map to array for JSON serialization
+            const data = Array.from(metadata.entries());
+            const content = JSON.stringify(data, null, 2);
+
+            await fs.writeFile(metadataPath, content, 'utf-8');
+        } catch (error) {
+            this.logger.warn('Failed to save file metadata:', error);
         }
     }
 
-    private async releaseLock(operationKey: string): Promise<void> {
-        const lockFilePath = this.getLockFilePath(operationKey);
-        
+    async updateFileMetadata(codebasePath: string, filePath: string, chunkIds: string[]): Promise<void> {
         try {
-            await fs.unlink(lockFilePath);
-            this.logger.debug(`Released lock: ${operationKey}`);
-        } catch (error: any) {
-            // Lock file might not exist or be already deleted - that's OK
-            this.logger.debug(`Lock release no-op (file not found): ${operationKey}`);
+            const stats = await fs.stat(filePath);
+            const content = await fs.readFile(filePath, 'utf-8');
+
+            const metadata: FileMetadata = {
+                filePath,
+                lastModified: stats.mtime,
+                size: stats.size,
+                contentHash: this.calculateContentHash(content),
+                chunkIds
+            };
+
+            this.setFileMetadata(codebasePath, filePath, metadata);
+            // Note: Don't save to disk here - batch save after all files processed
+        } catch (error) {
+            this.logger.debug(`Failed to update metadata for ${filePath}:`, error);
         }
+    }
+
+    async updateFileMetadataAndSave(codebasePath: string, filePath: string, chunkIds: string[]): Promise<void> {
+        await this.updateFileMetadata(codebasePath, filePath, chunkIds);
+        await this.saveFileMetadata(codebasePath);
     }
 
     /**

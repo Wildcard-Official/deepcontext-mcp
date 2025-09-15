@@ -87,8 +87,8 @@ export class TurbopufferService implements TurbopufferStore {
             // Vector search
             requestBody.rank_by = ['vector', 'ANN', options.embedding];
         } else if (options.query) {
-            // BM25 text search
-            requestBody.rank_by = [`content BM25 "${options.query}"`];
+            // BM25 text search (use array format like hybrid search)
+            requestBody.rank_by = ['content', 'BM25', options.query];
         }
 
         // Add filters if provided

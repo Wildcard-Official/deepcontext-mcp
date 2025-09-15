@@ -56,6 +56,7 @@ export interface IntelligentSearchResponse {
     message: string;
 }
 
+
 export class SearchCoordinationService {
     private logger: Logger;
 

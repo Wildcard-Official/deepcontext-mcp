@@ -70,6 +70,12 @@ export interface IndexingResult {
     errors: Array<{ file: string; error: string }>;
 }
 
+export interface IndexingServices {
+    jinaApiService?: any; // JinaApiService 
+    turbopufferService?: any; // TurbopufferService
+    metadataCallback?: (codebasePath: string, indexedData: any) => Promise<void>;
+}
+
 export class IndexingOrchestrator {
     private fileUtils: FileUtils;
     private languageDetector: LanguageDetector;
@@ -77,14 +83,16 @@ export class IndexingOrchestrator {
     private symbolExtractor: TreeSitterSymbolExtractorFull;
     private chunkExtractor: TreeSitterChunkExtractor;
     private logger: Logger;
+    private services?: IndexingServices;
 
-    constructor() {
+    constructor(services?: IndexingServices) {
         this.fileUtils = new FileUtils();
         this.languageDetector = new LanguageDetector();
         this.contentFilter = new ContentFilterProvider();
         this.symbolExtractor = new TreeSitterSymbolExtractorFull();
         this.chunkExtractor = new TreeSitterChunkExtractor();
         this.logger = new Logger('INDEXING-ORCHESTRATOR', 'info');
+        this.services = services;
     }
 
     /**
@@ -103,13 +111,23 @@ export class IndexingOrchestrator {
 
         try {
             // Step 1: Discover files
+            this.logger.debug(`🔍 Starting file discovery for: ${request.codebasePath}`);
             const allFiles = await this.fileUtils.discoverFiles(
                 request.codebasePath,
                 request.supportedLanguages || ['typescript', 'javascript', 'python', 'java', 'cpp', 'go', 'rust']
             );
             this.logger.debug(`📁 Discovered: ${allFiles.length} files`);
 
+            if (allFiles.length === 0) {
+                this.logger.warn(`⚠️ No files found in ${request.codebasePath}`);
+                errors.push({
+                    file: request.codebasePath,
+                    error: 'No supported files found in directory'
+                });
+            }
+
             // Step 2: Apply content filtering
+            this.logger.debug(`🔍 Starting content filtering...`);
             let filesToProcess = allFiles;
             if (request.enableContentFiltering !== false) {
                 filesToProcess = await this.applyContentFiltering(allFiles, request.codebasePath);
@@ -144,13 +162,31 @@ export class IndexingOrchestrator {
             }
 
             const indexingTime = Date.now() - startTime;
+            const namespace = this.generateNamespace(request.codebasePath);
+            
+            // Upload to vector store if services are provided
+            if (this.services?.jinaApiService && this.services?.turbopufferService && chunks.length > 0) {
+                this.logger.info(`Uploading ${chunks.length} chunks to vector store...`);
+                await this.uploadChunksToVectorStore(namespace, chunks);
+                
+                // Call metadata callback if provided
+                if (this.services.metadataCallback) {
+                    const indexedData = {
+                        namespace,
+                        totalChunks: chunks.length,
+                        indexedAt: new Date().toISOString()
+                    };
+                    await this.services.metadataCallback(request.codebasePath, indexedData);
+                }
+            }
+            
             this.logger.info(`✅ Complete: ${chunks.length} chunks in ${indexingTime}ms`);
 
             return {
                 success: true,
                 metadata: {
                     codebasePath: request.codebasePath,
-                    namespace: this.generateNamespace(request.codebasePath),
+                    namespace,
                     totalFiles: filesToProcess.length,
                     totalChunks: chunks.length,
                     totalSymbols: chunks.reduce((sum, chunk) => sum + chunk.symbols.length, 0),
@@ -671,6 +707,45 @@ export class IndexingOrchestrator {
     }
 
     /**
+     * Upload chunks to vector store with embedding generation
+     */
+    private async uploadChunksToVectorStore(namespace: string, chunks: CodeChunk[]): Promise<void> {
+        if (!chunks.length || !this.services?.jinaApiService || !this.services?.turbopufferService) {
+            return;
+        }
+        
+        this.logger.info(`Uploading ${chunks.length} chunks to vector store and local metadata...`);
+        
+        const batchSize = 50;
+        for (let i = 0; i < chunks.length; i += batchSize) {
+            const batch = chunks.slice(i, i + batchSize);
+            
+            // Generate embeddings for batch
+            const embeddings = await this.services.jinaApiService.generateEmbeddingBatch(
+                batch.map(chunk => chunk.content)
+            );
+            
+            // Prepare upsert data in Turbopuffer v2 format with schema for full-text search
+            const upsertData = batch.map((chunk, idx) => ({
+                id: chunk.id,
+                vector: embeddings[idx],
+                content: chunk.content,
+                filePath: chunk.filePath,
+                relativePath: chunk.relativePath,
+                startLine: chunk.startLine,
+                endLine: chunk.endLine,
+                language: chunk.language,
+                symbols: chunk.symbols.map(s => typeof s === 'string' ? s : s.name).join(',')
+            }));
+            
+            // Upload to Turbopuffer
+            await this.services.turbopufferService.upsert(namespace, upsertData);
+        }
+        
+        this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace}`);
+    }
+
+    /**
      * Create sensible fallback chunks when semantic parsing fails
      * Unlike the broken single-line approach, this creates larger, meaningful chunks
      */
@@ -839,5 +914,112 @@ export class IndexingOrchestrator {
         const input = `${filePath}:${startLine}:${content}`;
         const hash = crypto.createHash('sha256').update(input, 'utf-8').digest('hex');
         return `chunk_${hash.substring(0, 16)}`;
+    }
+
+    /**
+     * Get indexing status for codebases
+     */
+    async getIndexingStatus(
+        indexedCodebases: Map<string, any>, 
+        codebasePath?: string
+    ): Promise<{
+        indexedCodebases: any[];
+        currentCodebase?: any;
+        incrementalStats?: any;
+        indexed: boolean;
+        fileCount: number;
+    }> {
+        const indexedList = Array.from(indexedCodebases.values());
+        
+        let currentCodebase: any | undefined;
+        let incrementalStats: any;
+        
+        if (codebasePath) {
+            try {
+                const normalizedPath = path.resolve(codebasePath);
+                await fs.access(normalizedPath);
+                currentCodebase = indexedCodebases.get(normalizedPath);
+            } catch (error) {
+                return {
+                    indexedCodebases: indexedList,
+                    indexed: false,
+                    fileCount: 0
+                };
+            }
+            
+            if (currentCodebase) {
+                incrementalStats = {
+                    indexingMethod: 'full',
+                    lastIndexed: currentCodebase.indexedAt
+                };
+            }
+        }
+
+        const indexed = codebasePath ? !!currentCodebase : indexedList.length > 0;
+        const fileCount = currentCodebase?.totalChunks || indexedList.reduce((sum: number, cb: any) => sum + cb.totalChunks, 0);
+
+        return {
+            indexedCodebases: indexedList,
+            currentCodebase,
+            incrementalStats,
+            indexed,
+            fileCount
+        };
+    }
+
+    /**
+     * Clear index for codebase(s)
+     */
+    async clearIndex(
+        indexedCodebases: Map<string, any>,
+        codebasePath?: string,
+        saveCallback?: () => Promise<void>
+    ): Promise<{
+        success: boolean;
+        message: string;
+        clearedNamespaces: string[];
+    }> {
+        try {
+            const namespacesToClear: string[] = [];
+            
+            if (codebasePath) {
+                const indexed = indexedCodebases.get(codebasePath);
+                if (indexed) {
+                    namespacesToClear.push(indexed.namespace);
+                    indexedCodebases.delete(codebasePath);
+                }
+            } else {
+                for (const indexed of indexedCodebases.values()) {
+                    namespacesToClear.push(indexed.namespace);
+                }
+                indexedCodebases.clear();
+            }
+
+            // Clear from vector store if service available
+            if (this.services?.turbopufferService) {
+                for (const namespace of namespacesToClear) {
+                    await this.services.turbopufferService.clearNamespace(namespace);
+                }
+            }
+
+            // Save state if callback provided
+            if (saveCallback) {
+                await saveCallback();
+            }
+            
+            return {
+                success: true,
+                message: `Cleared ${namespacesToClear.length} namespace(s)`,
+                clearedNamespaces: namespacesToClear
+            };
+            
+        } catch (error) {
+            this.logger.error('Clear index failed:', error);
+            return {
+                success: false,
+                message: `Clear failed: ${error instanceof Error ? error.message : String(error)}`,
+                clearedNamespaces: []
+            };
+        }
     }
 }
