@@ -22,7 +22,6 @@ A comprehensive Model Context Protocol (MCP) server by **Wildcard Corporation** 
 - **Multi-strategy search** - Semantic, hybrid, BM25, and structural search options
 
 ### 🤖 **AI-Powered Features**
-- **Query Enhancement** - OpenAI GPT-4o-mini improves search query understanding
 - **Result Reranking** - Jina reranker-v2 optimizes relevance scoring
 - **Local BM25 Search** - SQLite full-text search for exact keyword matching
 - **Hybrid Fusion** - Combines vector similarity with BM25 for best results
@@ -47,24 +46,12 @@ npm run build
 - **Jina AI**: Get your API key from [Jina AI](https://jina.ai/) - *For embeddings and reranking*
 - **Turbopuffer**: Get your API key from [Turbopuffer](https://turbopuffer.com/) - *For vector storage*
 
-#### **Optional APIs (Recommended):**
-- **OpenAI**: Get your API key from [OpenAI](https://openai.com/) - *For advanced query enhancement*
-  - ✅ **Enables**: AI-powered query rewriting for better search results
-  - ❌ **Without**: Basic search without query understanding improvements
-
 ### 3. Add to Claude Code
 ```bash
 # Install via npm
 npm install -g @wildcard-corp/intelligent-context-mcp
 
-# Add to Claude Code (with all features)
-claude mcp add intelligent-context \\
-  -e JINA_API_KEY=your-jina-key \\
-  -e TURBOPUFFER_API_KEY=your-turbopuffer-key \\
-  -e OPENAI_API_KEY=your-openai-key \\
-  -- npx @wildcard-corp/intelligent-context-mcp
-
-# Add to Claude Code (without query enhancement)
+# Add to Claude Code
 claude mcp add intelligent-context \\
   -e JINA_API_KEY=your-jina-key \\
   -e TURBOPUFFER_API_KEY=your-turbopuffer-key \\

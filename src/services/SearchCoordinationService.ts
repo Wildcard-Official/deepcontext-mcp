@@ -13,7 +13,6 @@ export interface SearchOptions {
     bm25Weight?: number;
     fileTypes?: string[];
     offset?: number;
-    enableQueryEnhancement?: boolean;
     enableReranking?: boolean;
 }
 
@@ -43,7 +42,6 @@ export interface SearchResponse {
         vectorResults?: number;
         bm25Results?: number;
         totalMatches?: number;
-        queryEnhanced?: boolean;
         reranked?: boolean;
     };
 }
@@ -89,7 +87,6 @@ export class SearchCoordinationService {
                     vectorResults: 0,
                     bm25Results: 0,
                     totalMatches: 0,
-                    queryEnhanced: false,
                     reranked: false
                 }
             };
@@ -151,7 +148,6 @@ export class SearchCoordinationService {
                     vectorResults: Math.floor(results.length * (options.vectorWeight || 0.7)),
                     bm25Results: Math.floor(results.length * (options.bm25Weight || 0.3)),
                     totalMatches: results.length,
-                    queryEnhanced: options.enableQueryEnhancement !== false,
                     reranked: options.enableReranking !== false
                 }
             };
@@ -171,7 +167,6 @@ export class SearchCoordinationService {
                     vectorResults: 0,
                     bm25Results: 0,
                     totalMatches: 0,
-                    queryEnhanced: false,
                     reranked: false
                 }
             };

@@ -8,12 +8,10 @@ import { Logger } from '../utils/Logger.js';
 export interface McpConfig {
     jinaApiKey: string;
     turbopufferApiKey: string;
-    openaiApiKey?: string;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
 export interface ServiceCapabilities {
-    queryEnhancement: boolean;
     reranking: boolean;
     vectorSearch: boolean;
     embedding: boolean;
@@ -61,7 +59,6 @@ export class ConfigurationService {
         const baseConfig: McpConfig = {
             jinaApiKey: process.env.JINA_API_KEY || 'test',
             turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
-            openaiApiKey: process.env.OPENAI_API_KEY,
             logLevel: (process.env.LOG_LEVEL as any) || 'info'
         };
         
@@ -70,7 +67,6 @@ export class ConfigurationService {
         this.logger.debug('Configuration loaded', {
             hasJinaKey: !!finalConfig.jinaApiKey,
             hasTurbopufferKey: !!finalConfig.turbopufferApiKey,
-            hasOpenAIKey: !!finalConfig.openaiApiKey,
             logLevel: finalConfig.logLevel
         });
         
@@ -120,10 +116,7 @@ export class ConfigurationService {
             warnings.push('Using test Turbopuffer API key - functionality will be limited');
         }
 
-        // Check optional keys
-        if (!this.config.openaiApiKey) {
-            warnings.push('OpenAI API key not provided - query enhancement will be disabled');
-        }
+        // OpenAI API key no longer required
 
         // Validate log level
         const validLogLevels = ['debug', 'info', 'warn', 'error'];
@@ -134,7 +127,6 @@ export class ConfigurationService {
 
         // Determine capabilities
         const capabilities: ServiceCapabilities = {
-            queryEnhancement: !!this.config.openaiApiKey,
             reranking: !!(this.config.jinaApiKey && this.config.jinaApiKey !== 'test'),
             vectorSearch: !!(this.config.turbopufferApiKey && this.config.turbopufferApiKey !== 'test'),
             embedding: !!(this.config.jinaApiKey && this.config.jinaApiKey !== 'test')
@@ -200,12 +192,6 @@ export class ConfigurationService {
         };
     }
 
-    getOpenAIConfig(): { apiKey?: string; isAvailable: boolean } {
-        return {
-            apiKey: this.config.openaiApiKey,
-            isAvailable: !!this.config.openaiApiKey
-        };
-    }
 
     /**
      * Log configuration status to console
@@ -218,9 +204,7 @@ export class ConfigurationService {
         console.error(`📊 Log Level: ${this.config.logLevel.toUpperCase()}`);
         console.error(`🔑 Jina API: ${this.config.jinaApiKey !== 'test' ? '✅ Configured' : '⚠️ Test Key'}`);
         console.error(`🗄️ Turbopuffer: ${this.config.turbopufferApiKey !== 'test' ? '✅ Configured' : '⚠️ Test Key'}`);
-        console.error(`🤖 OpenAI: ${this.config.openaiApiKey ? '✅ Configured' : '❌ Not Set'}`);
         console.error('\n🚀 Available Capabilities:');
-        console.error(`✨ Query Enhancement: ${capabilities.queryEnhancement ? '✅ Enabled' : '❌ Disabled'}`);
         console.error(`🔄 Result Reranking: ${capabilities.reranking ? '✅ Enabled' : '❌ Disabled'}`);
         console.error(`🔍 Vector Search: ${capabilities.vectorSearch ? '✅ Enabled' : '❌ Disabled'}`);
         console.error(`📐 Embeddings: ${capabilities.embedding ? '✅ Enabled' : '❌ Disabled'}`);
@@ -242,9 +226,6 @@ export class ConfigurationService {
             if (!capabilities.vectorSearch) {
                 console.error('   • Set TURBOPUFFER_API_KEY environment variable');
             }
-            if (!capabilities.queryEnhancement) {
-                console.error('   • Set OPENAI_API_KEY environment variable (optional)');
-            }
         }
         console.error('=' .repeat(50));
     }
@@ -258,7 +239,6 @@ export class ConfigurationService {
         keyStatus: {
             jina: 'configured' | 'test' | 'missing';
             turbopuffer: 'configured' | 'test' | 'missing';
-            openai: 'configured' | 'missing';
         };
         errors: string[];
         warnings: string[];
@@ -269,11 +249,10 @@ export class ConfigurationService {
             isValid: validation.isValid,
             capabilities: validation.capabilities,
             keyStatus: {
-                jina: !this.config.jinaApiKey ? 'missing' : 
+                jina: !this.config.jinaApiKey ? 'missing' :
                       this.config.jinaApiKey === 'test' ? 'test' : 'configured',
-                turbopuffer: !this.config.turbopufferApiKey ? 'missing' : 
-                            this.config.turbopufferApiKey === 'test' ? 'test' : 'configured',
-                openai: this.config.openaiApiKey ? 'configured' : 'missing'
+                turbopuffer: !this.config.turbopufferApiKey ? 'missing' :
+                            this.config.turbopufferApiKey === 'test' ? 'test' : 'configured'
             },
             errors: validation.errors,
             warnings: validation.warnings
@@ -287,7 +266,6 @@ export class ConfigurationService {
         return {
             jinaApiKey: this.maskApiKey(this.config.jinaApiKey),
             turbopufferApiKey: this.maskApiKey(this.config.turbopufferApiKey),
-            openaiApiKey: this.config.openaiApiKey ? this.maskApiKey(this.config.openaiApiKey) : undefined,
             logLevel: this.config.logLevel
         };
     }

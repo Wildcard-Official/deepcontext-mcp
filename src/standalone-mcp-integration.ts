@@ -29,6 +29,7 @@ import { ConfigurationService } from './services/ConfigurationService.js';
 import { NamespaceManagerService, IndexedCodebase } from './services/NamespaceManagerService.js';
 import { FileProcessingService } from './services/FileProcessingService.js';
 import { SearchCoordinationService } from './services/SearchCoordinationService.js';
+import { SemanticSubChunker } from './services/SemanticSubChunker.js';
 import { CodeChunk } from './types/core.js';
 import { McpConfig } from './services/ConfigurationService.js';
 
@@ -44,6 +45,7 @@ export class StandaloneCodexMcp {
     private fileProcessingService: FileProcessingService;
     private searchCoordinationService: SearchCoordinationService;
     private symbolExtractor: TreeSitterSymbolExtractorFull;
+    private semanticSubChunker: SemanticSubChunker;
 
     constructor(config?: Partial<McpConfig>) {
         // Initialize ConfigurationService with provided config
@@ -55,6 +57,7 @@ export class StandaloneCodexMcp {
         this.jinaApiService = new JinaApiService(this.config.jinaApiKey);
         this.turbopufferService = new TurbopufferService(this.config.turbopufferApiKey);
         this.symbolExtractor = new TreeSitterSymbolExtractorFull();
+        this.semanticSubChunker = new SemanticSubChunker();
 
         // Initialize NamespaceManagerService first (needed for metadata callback)
         this.namespaceManagerService = new NamespaceManagerService(this.turbopufferService);
@@ -74,12 +77,39 @@ export class StandaloneCodexMcp {
                         return;
                     }
 
-                    this.logger.info(`Uploading ${chunks.length} chunks to namespace: ${namespace}`);
+                    this.logger.info(`Processing ${chunks.length} chunks for semantic sub-chunking...`);
 
-                    // Process chunks in batches for embedding generation
+                    // Step 1: Process chunks through semantic sub-chunker to prevent truncation
+                    const processedChunks: any[] = [];
+                    let totalSubChunks = 0;
+
+                    for (const chunk of chunks) {
+                        const subChunks = await this.semanticSubChunker.splitLargeChunk(chunk);
+                        processedChunks.push(...subChunks);
+
+                        if (subChunks.length > 1) {
+                            totalSubChunks += subChunks.length;
+                            this.logger.debug(`Split large chunk ${chunk.id} into ${subChunks.length} sub-chunks`);
+                        }
+                    }
+
+                    if (totalSubChunks > chunks.length) {
+                        this.logger.info(`✂️ Created ${totalSubChunks - chunks.length} additional sub-chunks to prevent content loss`);
+                    }
+
+                    this.logger.info(`Uploading ${processedChunks.length} processed chunks to namespace: ${namespace}`);
+
+                    // Step 2: Process chunks in batches for embedding generation
                     const BATCH_SIZE = 50;
-                    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-                        const batch = chunks.slice(i, i + BATCH_SIZE);
+                    for (let i = 0; i < processedChunks.length; i += BATCH_SIZE) {
+                        const batch = processedChunks.slice(i, i + BATCH_SIZE);
+
+                        // Validate chunk sizes before embedding
+                        for (const chunk of batch) {
+                            if (chunk.content.length > 20000) {
+                                this.logger.warn(`⚠️ Chunk ${chunk.id} still exceeds 20K chars (${chunk.content.length}) - may cause embedding errors`);
+                            }
+                        }
 
                         // Generate embeddings for the batch
                         const embeddings = await this.jinaApiService.generateEmbeddingBatch(
@@ -104,10 +134,10 @@ export class StandaloneCodexMcp {
                         // Upload to vector store
                         await this.turbopufferService.upsert(namespace, upsertData);
 
-                        this.logger.debug(`Uploaded batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(chunks.length/BATCH_SIZE)} (${batch.length} chunks)`);
+                        this.logger.debug(`Uploaded batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(processedChunks.length/BATCH_SIZE)} (${batch.length} chunks)`);
                     }
 
-                    this.logger.info(`Successfully uploaded ${chunks.length} chunks to ${namespace}`);
+                    this.logger.info(`✅ Successfully uploaded ${processedChunks.length} chunks to ${namespace} (${totalSubChunks - chunks.length} additional sub-chunks created)`);
                 } catch (error) {
                     this.logger.error(`Failed to upload chunks to ${namespace}:`, error);
                     throw error;
@@ -187,7 +217,6 @@ export class StandaloneCodexMcp {
         vectorWeight?: number;
         bm25Weight?: number;
         fileTypes?: string[];
-        enableQueryEnhancement?: boolean;
         enableReranking?: boolean;
     } = {}): Promise<{
         success: boolean;
@@ -198,7 +227,6 @@ export class StandaloneCodexMcp {
             vectorResults: number;
             bm25Results: number;
             totalMatches: number;
-            queryEnhanced: boolean;
             reranked: boolean;
         };
     }> {
@@ -218,7 +246,6 @@ export class StandaloneCodexMcp {
                     vectorResults: 0,
                     bm25Results: 0,
                     totalMatches: 0,
-                    queryEnhanced: false,
                     reranked: false
                 }
             };
@@ -240,7 +267,6 @@ export class StandaloneCodexMcp {
                 vectorResults: searchResult.metadata?.vectorResults || 0,
                 bm25Results: searchResult.metadata?.bm25Results || 0,
                 totalMatches: searchResult.metadata?.totalMatches || searchResult.results.length,
-                queryEnhanced: searchResult.metadata?.queryEnhanced || (options.enableQueryEnhancement !== false),
                 reranked: searchResult.metadata?.reranked || (options.enableReranking !== false)
             }
         };
@@ -720,25 +746,18 @@ This tool should be used for all code-related searches in this project:
     async run(): Promise<void> {
         // Show configuration status
         const config = {
-            openaiApiKey: process.env.OPENAI_API_KEY,
             jinaApiKey: process.env.JINA_API_KEY,
             turbopufferApiKey: process.env.TURBOPUFFER_API_KEY
         };
-        
+
         const capabilities = {
-            queryEnhancement: !!config.openaiApiKey,
             reranking: !!config.jinaApiKey && config.jinaApiKey !== 'test',
             vectorSearch: !!config.turbopufferApiKey && config.turbopufferApiKey !== 'test',
             localBM25: true
         };
-        
+
         console.error('🔧 Capabilities:', JSON.stringify(capabilities));
-        
-        if (!config.openaiApiKey) {
-            console.error('⚠️  OpenAI API key not provided - query enhancement will be disabled');
-            console.error('💡 Set OPENAI_API_KEY environment variable to enable query enhancement');
-        }
-        
+
         if (!config.jinaApiKey || config.jinaApiKey === 'test') {
             console.error('⚠️  Jina API key not provided - result reranking will be disabled');
             console.error('💡 Set JINA_API_KEY environment variable to enable result reranking');
@@ -751,7 +770,6 @@ This tool should be used for all code-related searches in this project:
         await this.server.connect(transport);
         
         console.error('🚀 Intelligent Context MCP Server ready!');
-        console.error(`✨ Query Enhancement: ${!!config.openaiApiKey ? '✅ Enabled' : '❌ Disabled'}`);
         console.error(`🔄 Result Reranking: ${!!(config.jinaApiKey && config.jinaApiKey !== 'test') ? '✅ Enabled' : '❌ Disabled'}`);
         console.error('📝 Local BM25 Search: ✅ Always Available');
         console.error('🔌 Transport: stdio');
