@@ -522,7 +522,7 @@ This tool should be used for all code-related searches in this project:
                             max_results: {
                                 type: 'number',
                                 description: 'Maximum number of results to return',
-                                default: 10
+                                default: 5
                             }
                         },
                         required: ['query']
@@ -608,7 +608,7 @@ This tool should be used for all code-related searches in this project:
                         const searchResult = await this.codexMcp.searchWithIntelligence(
                             (args as any).query,
                             (args as any).codebase_path,
-                            (args as any).max_results || 10
+                            (args as any).max_results || 5
                         );
                         console.log(`🔍 STANDALONE MCP RESULT: ${searchResult.results.length} results, top score: ${searchResult.results[0]?.score}`);
                         
@@ -635,7 +635,7 @@ This tool should be used for all code-related searches in this project:
                                     score: chunk.score,
                                     symbols: chunk.symbols,
                                     connections: chunk.connections, // Include connection context for Claude
-                                    ...(chunkAny.originalScore !== undefined && { 
+                                    ...(chunkAny.originalScore !== undefined && {
                                         original_score: chunkAny.originalScore,
                                         reranked: chunkAny.reranked || true
                                     })

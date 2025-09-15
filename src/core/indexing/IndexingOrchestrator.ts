@@ -91,7 +91,7 @@ export class IndexingOrchestrator {
         this.contentFilter = new ContentFilterProvider();
         this.symbolExtractor = new TreeSitterSymbolExtractorFull();
         this.chunkExtractor = new TreeSitterChunkExtractor();
-        this.logger = new Logger('INDEXING-ORCHESTRATOR', 'info');
+        this.logger = new Logger('INDEXING-ORCHESTRATOR', 'debug');
         this.services = services;
     }
 
@@ -110,6 +110,8 @@ export class IndexingOrchestrator {
         })}`);
 
         try {
+            // Initialize symbol extractor if not already initialized
+            await this.symbolExtractor.initialize();
             // Step 1: Discover files
             this.logger.debug(`🔍 Starting file discovery for: ${request.codebasePath}`);
             const allFiles = await this.fileUtils.discoverFiles(
@@ -246,23 +248,66 @@ export class IndexingOrchestrator {
                 relativePath
             );
 
-            // Convert SemanticChunk[] to CodeChunk[] format
-            const chunks: CodeChunk[] = chunkingResult.chunks.map(semanticChunk => ({
-                id: semanticChunk.id,
-                content: semanticChunk.content,
-                filePath: semanticChunk.filePath,
-                relativePath: semanticChunk.relativePath,
-                startLine: semanticChunk.startLine,
-                endLine: semanticChunk.endLine,
-                language: semanticChunk.language,
-                symbols: semanticChunk.symbols.map(symbol => ({
-                    name: symbol.name,
-                    type: symbol.type as any,
-                    line: symbol.line,
-                    scope: symbol.scope
-                })),
-                imports: semanticChunk.imports
-            }));
+            // Extract symbols and imports at file level for efficiency
+            const fileSymbolResult = await this.symbolExtractor.extractSymbols(
+                content,
+                language.language,
+                filePath
+            );
+
+            this.logger.debug(`🔍 Symbol extraction for ${filePath}: ${fileSymbolResult.symbols.length} symbols, ${fileSymbolResult.imports.length} imports`);
+
+            // Convert SemanticChunk[] to CodeChunk[] format with enhanced symbols/imports
+            const chunks: CodeChunk[] = chunkingResult.chunks.map(semanticChunk => {
+                // Find symbols that belong to this chunk (based on line ranges)
+                const candidateSymbols = fileSymbolResult.symbols
+                    .filter(symbol =>
+                        // More flexible filtering: symbol overlaps with chunk
+                        symbol.startLine <= semanticChunk.endLine &&
+                        symbol.endLine >= semanticChunk.startLine
+                    );
+
+                this.logger.debug(`📍 Chunk ${semanticChunk.startLine}-${semanticChunk.endLine}: ${candidateSymbols.length} candidate symbols`);
+
+                const chunkSymbols = candidateSymbols
+                    .filter(symbol =>
+                        // Filter out symbol types not supported by SymbolInfo interface
+                        ['function', 'class', 'interface', 'variable', 'constant', 'type', 'namespace'].includes(symbol.type)
+                    )
+                    .map(symbol => ({
+                        name: symbol.name,
+                        type: symbol.type as 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type',
+                        line: symbol.startLine,
+                        scope: symbol.scope
+                    }));
+
+                this.logger.debug(`✅ Chunk symbols after filtering: ${chunkSymbols.length} symbols - ${chunkSymbols.map(s => s.name).join(', ')}`);
+
+                // Find imports that are relevant to this chunk
+                const chunkImports = fileSymbolResult.imports
+                    .filter(imp => imp.line <= semanticChunk.endLine) // Imports typically at top of file
+                    .map(imp => ({
+                        module: imp.module,
+                        symbols: imp.symbols,
+                        line: imp.line
+                    }));
+
+                return {
+                    id: semanticChunk.id,
+                    content: semanticChunk.content,
+                    filePath: semanticChunk.filePath,
+                    relativePath: semanticChunk.relativePath,
+                    startLine: semanticChunk.startLine,
+                    endLine: semanticChunk.endLine,
+                    language: semanticChunk.language,
+                    symbols: chunkSymbols,
+                    imports: chunkImports,
+                    exports: fileSymbolResult.exports.filter(exp =>
+                        // Associate exports with chunks that contain them
+                        chunkSymbols.some(sym => sym.name === exp)
+                    )
+                };
+            });
 
             this.logger.debug(`Created ${chunks.length} semantic chunks for ${filePath}`);
             

@@ -146,19 +146,13 @@ export class TurbopufferService implements TurbopufferStore {
                     {
                         rank_by: ['vector', 'ANN', options.embedding],
                         top_k: Math.min(limit * 2, 50),
-                        include_attributes: [
-                            'content', 'filePath', 'startLine', 'endLine', 
-                            'language'
-                        ]
+                        include_attributes: true
                     },
                     // BM25 search query
                     {
                         rank_by: ['content', 'BM25', options.query],
                         top_k: Math.min(limit * 2, 50),
-                        include_attributes: [
-                            'content', 'filePath', 'startLine', 'endLine', 
-                            'language'
-                        ]
+                        include_attributes: true
                     }
                 ]
             })

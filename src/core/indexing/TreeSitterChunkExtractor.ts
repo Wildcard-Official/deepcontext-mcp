@@ -124,7 +124,7 @@ export class TreeSitterChunkExtractor {
             const jsParser = new Parser();
             jsParser.setLanguage(JavaScriptLanguage);
             this.parsers.set('javascript', jsParser);
-            
+
             this.initialized = true;
             this.logger.info('✅ Tree-sitter chunker initialized successfully');
             
@@ -335,7 +335,7 @@ export class TreeSitterChunkExtractor {
     ): Promise<SemanticChunk> {
         // Extract symbols from this unit
         const symbols = this.extractSymbolsFromUnit(unit);
-        
+
         // Extract imports (look at the beginning of the file)
         const imports = this.extractImportsFromUnit(unit);
         
@@ -360,15 +360,15 @@ export class TreeSitterChunkExtractor {
 
     private extractSymbolsFromUnit(unit: SemanticUnit): SemanticChunk['symbols'] {
         const symbols: SemanticChunk['symbols'] = [];
-        
+
         // Extract symbols from the AST node AND its children
         this.traverseNodeForSymbols(unit.node, symbols);
-        
+
         // If no symbols found from main node, try to extract from content
         if (symbols.length === 0 && unit.node) {
             this.extractSymbolsFromContent(unit.content, unit.type, symbols, unit.startLine);
         }
-        
+
         return symbols;
     }
 
