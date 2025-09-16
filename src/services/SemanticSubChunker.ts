@@ -50,7 +50,7 @@ export interface SemanticSection {
 
 export class SemanticSubChunker {
     private logger: Logger;
-    private readonly MAX_CHUNK_SIZE = 18000; // Safe limit with margin
+    private readonly MAX_CHUNK_SIZE = 1500; // Activate for larger TreeSitter chunks to add context
     private readonly MIN_OVERLAP_SIZE = 1000; // Minimum context overlap
     private readonly CONTEXT_WINDOW = 500;   // Context around important sections
 
