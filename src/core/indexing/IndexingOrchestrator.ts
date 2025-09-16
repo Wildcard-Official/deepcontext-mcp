@@ -10,7 +10,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as crypto from 'crypto';
+import * as crypto from 'crypto'; // Keep for fallback generateNamespace
 import { FileUtils } from '../../utils/FileUtils.js';
 import { LanguageDetector } from '../../utils/LanguageDetector.js';
 import { ContentFilterProvider } from './ContentFilterProvider.js';
@@ -71,8 +71,9 @@ export interface IndexingResult {
 }
 
 export interface IndexingServices {
-    jinaApiService?: any; // JinaApiService 
+    jinaApiService?: any; // JinaApiService
     turbopufferService?: any; // TurbopufferService
+    namespaceManagerService?: any; // NamespaceManagerService
     metadataCallback?: (codebasePath: string, indexedData: any) => Promise<void>;
 }
 
@@ -164,7 +165,8 @@ export class IndexingOrchestrator {
             }
 
             const indexingTime = Date.now() - startTime;
-            const namespace = this.generateNamespace(request.codebasePath);
+            const namespace = this.services?.namespaceManagerService?.generateNamespace(request.codebasePath)
+                || this.generateNamespace(request.codebasePath);
             
             // Upload to vector store if services are provided
             if (this.services?.jinaApiService && this.services?.turbopufferService && chunks.length > 0) {
@@ -211,7 +213,8 @@ export class IndexingOrchestrator {
                 success: false,
                 metadata: {
                     codebasePath: request.codebasePath,
-                    namespace: this.generateNamespace(request.codebasePath),
+                    namespace: this.services?.namespaceManagerService?.generateNamespace(request.codebasePath)
+                        || this.generateNamespace(request.codebasePath),
                     totalFiles: 0,
                     totalChunks: 0,
                     totalSymbols: 0,
@@ -745,7 +748,12 @@ export class IndexingOrchestrator {
 
 
 
+    /**
+     * Fallback namespace generation (deprecated - use NamespaceManagerService)
+     * @deprecated Use NamespaceManagerService.generateNamespace() instead
+     */
     private generateNamespace(codebasePath: string): string {
+        this.logger.warn('Using deprecated fallback generateNamespace - should use NamespaceManagerService');
         const normalized = path.resolve(codebasePath);
         const hash = crypto.createHash('md5').update(normalized).digest('hex');
         return `mcp_${hash.substring(0, 8)}`;

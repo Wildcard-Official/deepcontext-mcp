@@ -4,7 +4,7 @@
  */
 
 import { Logger } from '../utils/Logger.js';
-import { TurbopufferStore } from './HybridSearchService.js';
+import { TurbopufferStore, VectorSearchResult } from '../types/search.js';
 
 export interface VectorStoreResult {
     id: string;

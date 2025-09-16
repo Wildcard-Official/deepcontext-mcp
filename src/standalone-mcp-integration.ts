@@ -160,6 +160,7 @@ export class StandaloneCodexMcp {
         this.indexingOrchestrator = new IndexingOrchestrator({
             jinaApiService: this.jinaApiService,
             turbopufferService: this.turbopufferService,
+            namespaceManagerService: this.namespaceManagerService,
             metadataCallback
         });
 
