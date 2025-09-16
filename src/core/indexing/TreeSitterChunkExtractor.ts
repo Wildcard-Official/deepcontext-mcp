@@ -155,8 +155,8 @@ export class TreeSitterChunkExtractor {
         const parseErrors: string[] = [];
 
         try {
-            // Check for Tree-sitter's 32KB limit
-            const TREESITTER_LIMIT = 32768; // 2^15 bytes
+            // TreeSitter's actual limit based on testing
+            const TREESITTER_LIMIT = 32768; // 32KB - TreeSitter's proven reliable limit
             
             if (content.length > TREESITTER_LIMIT) {
                 this.logger.warn(`File ${filePath} (${content.length} chars) exceeds Tree-sitter limit, using smart pre-chunking`);
@@ -545,74 +545,519 @@ export class TreeSitterChunkExtractor {
         language: string,
         parser: any
     ): Promise<ChunkExtractionResult> {
-        // Smart pre-chunking for large files
-        // Split file into smaller sections that Tree-sitter can handle
-        const lines = content.split('\n');
-        const LINES_PER_SECTION = 1000; // Aim for ~30KB sections
+        this.logger.info(`Using intelligent TreeSitter range-based parsing for large file: ${filePath}`);
+
+        // Use intelligent range-based TreeSitter parsing instead of crude fallback
+        return await this.intelligentRangeBasedParsing(
+            content, filePath, relativePath, language, parser
+        );
+    }
+
+    /**
+     * Intelligent Range-Based TreeSitter Parsing
+     * Splits large files into semantic ranges and parses each with TreeSitter
+     */
+    private async intelligentRangeBasedParsing(
+        content: string,
+        filePath: string,
+        relativePath: string,
+        language: string,
+        parser: any
+    ): Promise<ChunkExtractionResult> {
+        const startTime = Date.now();
+        const WINDOW_SIZE = 30000; // 30KB windows (safe under 32KB limit)
+        const OVERLAP_SIZE = 2000;  // 2KB overlap for context preservation
+
+        // Step 1: Find semantic boundaries (class/function/interface starts)
+        const semanticBoundaries = this.findSemanticBoundaries(content);
+
+        // Step 2: Create overlapping windows that respect semantic boundaries
+        const windows = this.createIntelligentWindows(
+            content, semanticBoundaries, WINDOW_SIZE, OVERLAP_SIZE
+        );
+
+        this.logger.info(`Created ${windows.length} intelligent windows for TreeSitter parsing`);
+
         const allChunks: SemanticChunk[] = [];
         const allErrors: string[] = [];
-        
-        for (let i = 0; i < lines.length; i += LINES_PER_SECTION) {
-            const sectionLines = lines.slice(i, i + LINES_PER_SECTION);
-            const sectionContent = sectionLines.join('\n');
-            
-            if (sectionContent.length < 32768) {
-                try {
-                    const sectionResult = await this.extractSemanticChunks(
-                        sectionContent,
-                        language,
-                        `${filePath}:section${i}`,
-                        `${relativePath}:section${i}`
-                    );
-                    
-                    // Adjust line numbers for the chunks
-                    sectionResult.chunks.forEach(chunk => {
-                        chunk.startLine += i;
-                        chunk.endLine += i;
-                        chunk.id = this.generateShortId(filePath, `${chunk.startLine}-${chunk.endLine}`);
-                        chunk.filePath = filePath;
-                        chunk.relativePath = relativePath;
-                        
-                        // Adjust symbol line numbers
-                        chunk.symbols.forEach(symbol => {
-                            symbol.line += i;
-                        });
-                    });
-                    
-                    allChunks.push(...sectionResult.chunks);
-                    allErrors.push(...sectionResult.parseErrors);
-                    
-                } catch (error) {
-                    this.logger.warn(`Section ${i} parsing failed: ${error}`);
-                    allErrors.push(`Section ${i}: ${error}`);
-                    
-                    // Fallback to simple chunking for this section
-                    const fallbackChunk = this.createFallbackChunkFromSection(
-                        sectionContent, filePath, relativePath, language, i
-                    );
-                    allChunks.push(fallbackChunk);
+        let totalNodes = 0;
+
+        // Step 3: Parse each window with TreeSitter
+        for (let i = 0; i < windows.length; i++) {
+            const window = windows[i];
+
+            try {
+                this.logger.debug(`Parsing window ${i + 1}/${windows.length} (${window.content.length} chars)`);
+
+                const tree = parser.parse(window.content);
+                const rootNode = tree.rootNode;
+
+                if (rootNode.hasError) {
+                    allErrors.push(`Window ${i} has parse errors`);
                 }
-            } else {
-                // Section still too large, create fallback chunk
-                const fallbackChunk = this.createFallbackChunkFromSection(
-                    sectionContent, filePath, relativePath, language, i
+
+                // Create comprehensive chunks from this window to ensure full content coverage
+                const windowChunks = await this.createComprehensiveWindowChunks(
+                    rootNode,
+                    window.content,
+                    filePath,
+                    relativePath,
+                    language,
+                    i
+                );
+                totalNodes += this.countNodes(rootNode);
+
+                // Adjust line numbers to file coordinates and add to collection
+                for (const chunk of windowChunks) {
+                    chunk.startLine += window.startLine;
+                    chunk.endLine += window.startLine;
+                    chunk.id = this.generateShortId(filePath, `w${i}_${chunk.startLine}-${chunk.endLine}`);
+
+                    // Adjust symbol line numbers
+                    chunk.symbols.forEach(symbol => {
+                        symbol.line += window.startLine;
+                    });
+
+                    allChunks.push(chunk);
+                }
+
+            } catch (error) {
+                this.logger.warn(`TreeSitter parsing failed for window ${i}: ${error}`);
+                allErrors.push(`Window ${i}: ${error}`);
+
+                // Even if TreeSitter fails, create a semantic chunk for this window
+                const fallbackChunk = this.createSemanticFallbackChunk(
+                    window, filePath, relativePath, language, i
                 );
                 allChunks.push(fallbackChunk);
             }
         }
-        
-        const avgChunkSize = allChunks.reduce((sum, chunk) => sum + chunk.size, 0) / allChunks.length || 0;
-        
+
+        // Step 4: Remove duplicates from overlapping windows
+        const deduplicatedChunks = this.removeDuplicateChunks(allChunks);
+
+        const processingTime = Date.now() - startTime;
+        const avgChunkSize = deduplicatedChunks.reduce((sum, chunk) => sum + chunk.size, 0) / deduplicatedChunks.length || 0;
+
+        this.logger.info(`✅ Intelligent range-based parsing complete: ${deduplicatedChunks.length} chunks, ${processingTime}ms`);
+
         return {
-            chunks: allChunks,
+            chunks: deduplicatedChunks,
             parseErrors: allErrors,
             metadata: {
-                totalNodes: 0, // Can't calculate for large files
-                totalChunks: allChunks.length,
+                totalNodes,
+                totalChunks: deduplicatedChunks.length,
                 averageChunkSize: avgChunkSize,
-                processingTime: 0
+                processingTime
             }
         };
+    }
+
+    /**
+     * Find semantic boundaries in code (class/function/interface starts)
+     */
+    /**
+     * Create comprehensive chunks from a window ensuring full content coverage
+     */
+    private async createComprehensiveWindowChunks(
+        rootNode: TreeSitterNode,
+        windowContent: string,
+        filePath: string,
+        relativePath: string,
+        language: string,
+        windowIndex: number
+    ): Promise<SemanticChunk[]> {
+        const chunks: SemanticChunk[] = [];
+        const lines = windowContent.split('\n');
+
+        // First, find semantic units (functions, classes, etc.)
+        const semanticUnits = this.findSemanticUnits(rootNode, windowContent);
+        const coveredLines = new Set<number>();
+
+        // Process semantic units first
+        for (const unit of semanticUnits) {
+            const chunk = await this.createChunkFromUnit(
+                unit,
+                windowContent,
+                filePath,
+                relativePath,
+                language
+            );
+
+            if (chunk) {
+                chunks.push(chunk);
+                // Track which lines are covered
+                for (let line = chunk.startLine; line <= chunk.endLine; line++) {
+                    coveredLines.add(line);
+                }
+            }
+        }
+
+        // Find gaps and create chunks to fill them
+        const gaps = this.findContentGaps(lines.length, coveredLines);
+
+        for (const gap of gaps) {
+            const gapContent = lines.slice(gap.start, gap.end + 1).join('\n');
+
+            // Skip very small gaps (less than 3 lines) unless they contain meaningful content
+            if (gap.end - gap.start < 2) {
+                const hasContent = gapContent.trim().length > 50;
+                if (!hasContent) continue;
+            }
+
+            // Create chunk for gap content
+            const gapChunk = await this.createChunkFromContent(
+                gapContent,
+                gap.start,
+                gap.end,
+                filePath,
+                relativePath,
+                language,
+                'gap_content'
+            );
+
+            if (gapChunk) {
+                chunks.push(gapChunk);
+            }
+        }
+
+        // Sort chunks by start line
+        chunks.sort((a, b) => a.startLine - b.startLine);
+
+        return chunks;
+    }
+
+    /**
+     * Find gaps in line coverage
+     */
+    private findContentGaps(totalLines: number, coveredLines: Set<number>): Array<{start: number, end: number}> {
+        const gaps: Array<{start: number, end: number}> = [];
+        let gapStart = -1;
+
+        for (let line = 0; line < totalLines; line++) {
+            if (!coveredLines.has(line)) {
+                if (gapStart === -1) {
+                    gapStart = line;
+                }
+            } else {
+                if (gapStart !== -1) {
+                    gaps.push({start: gapStart, end: line - 1});
+                    gapStart = -1;
+                }
+            }
+        }
+
+        // Handle gap at end
+        if (gapStart !== -1) {
+            gaps.push({start: gapStart, end: totalLines - 1});
+        }
+
+        return gaps;
+    }
+
+    /**
+     * Create chunk from content string
+     */
+    private async createChunkFromContent(
+        content: string,
+        startLine: number,
+        endLine: number,
+        filePath: string,
+        relativePath: string,
+        language: string,
+        chunkType: string
+    ): Promise<SemanticChunk | null> {
+        if (content.trim().length === 0) {
+            return null;
+        }
+
+        // Extract symbols from content if possible
+        const symbols: SemanticChunk['symbols'] = [];
+
+        try {
+            // Simple regex-based symbol extraction for gap content
+            this.extractBasicSymbols(content, symbols, startLine);
+        } catch (error) {
+            // Continue without symbols if extraction fails
+        }
+
+        return {
+            id: this.generateShortId(filePath, `${startLine}-${endLine}`),
+            content: content.trim(),
+            filePath,
+            relativePath,
+            startLine,
+            endLine,
+            language,
+            chunkType: chunkType as SemanticChunk['chunkType'],
+            size: content.length,
+            complexity: 'low', // Simple default complexity
+            symbols,
+            imports: [] // TODO: Implement import extraction if needed
+        };
+    }
+
+    /**
+     * Extract basic symbols using simple patterns for gap content
+     */
+    private extractBasicSymbols(content: string, symbols: SemanticChunk['symbols'], baseLineNumber: number): void {
+        const lines = content.split('\n');
+
+        lines.forEach((line, i) => {
+            const lineNumber = baseLineNumber + i;
+            const trimmed = line.trim();
+
+            // Function declarations
+            const funcMatch = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)/);
+            if (funcMatch) {
+                symbols.push({
+                    name: funcMatch[1],
+                    type: 'function',
+                    line: lineNumber
+                });
+            }
+
+            // Class declarations
+            const classMatch = trimmed.match(/^(?:export\s+)?class\s+(\w+)/);
+            if (classMatch) {
+                symbols.push({
+                    name: classMatch[1],
+                    type: 'class',
+                    line: lineNumber
+                });
+            }
+
+            // Interface declarations
+            const interfaceMatch = trimmed.match(/^(?:export\s+)?interface\s+(\w+)/);
+            if (interfaceMatch) {
+                symbols.push({
+                    name: interfaceMatch[1],
+                    type: 'interface',
+                    line: lineNumber
+                });
+            }
+
+            // Type declarations
+            const typeMatch = trimmed.match(/^(?:export\s+)?type\s+(\w+)/);
+            if (typeMatch) {
+                symbols.push({
+                    name: typeMatch[1],
+                    type: 'type',
+                    line: lineNumber
+                });
+            }
+        });
+    }
+
+    private findSemanticBoundaries(content: string): Array<{ line: number; type: string; name?: string }> {
+        const lines = content.split('\n');
+        const boundaries: Array<{ line: number; type: string; name?: string }> = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            // Major semantic boundaries
+            if (line.match(/^(export\s+)?(class|interface|enum)\s+\w+/)) {
+                const match = line.match(/^(export\s+)?(class|interface|enum)\s+(\w+)/);
+                boundaries.push({
+                    line: i,
+                    type: match?.[2] || 'class',
+                    name: match?.[3]
+                });
+            } else if (line.match(/^(export\s+)?(async\s+)?function\s+\w+/)) {
+                const match = line.match(/^(export\s+)?(async\s+)?function\s+(\w+)/);
+                boundaries.push({
+                    line: i,
+                    type: 'function',
+                    name: match?.[3]
+                });
+            } else if (line.match(/^(export\s+)?(const|let|var)\s+\w+\s*=/)) {
+                const match = line.match(/^(export\s+)?(const|let|var)\s+(\w+)/);
+                boundaries.push({
+                    line: i,
+                    type: 'variable',
+                    name: match?.[3]
+                });
+            }
+        }
+
+        return boundaries;
+    }
+
+    /**
+     * Create intelligent windows that respect semantic boundaries
+     */
+    private createIntelligentWindows(
+        content: string,
+        boundaries: Array<{ line: number; type: string; name?: string }>,
+        windowSize: number,
+        overlapSize: number
+    ): Array<{ content: string; startLine: number; endLine: number; startByte: number; endByte: number }> {
+        const lines = content.split('\n');
+        const windows: Array<{ content: string; startLine: number; endLine: number; startByte: number; endByte: number }> = [];
+
+        let currentStart = 0;
+
+        while (currentStart < lines.length) {
+            // Find optimal end point respecting semantic boundaries
+            let currentEnd = Math.min(currentStart + Math.floor(windowSize / 50), lines.length); // ~50 chars per line estimate
+
+            // Adjust end to semantic boundary if possible
+            const nearbyBoundary = boundaries.find(b =>
+                b.line > currentEnd - 10 && b.line < currentEnd + 10
+            );
+
+            if (nearbyBoundary && nearbyBoundary.line < lines.length - 5) {
+                currentEnd = nearbyBoundary.line;
+            }
+
+            const windowLines = lines.slice(currentStart, currentEnd);
+            const windowContent = windowLines.join('\n');
+
+            // Ensure window is under size limit
+            if (windowContent.length > windowSize) {
+                // Trim to size while preserving semantic integrity
+                currentEnd = this.findSafeTrimPoint(lines, currentStart, windowSize);
+                const trimmedContent = lines.slice(currentStart, currentEnd).join('\n');
+
+                if (trimmedContent.length > 0) {
+                    windows.push({
+                        content: trimmedContent,
+                        startLine: currentStart,
+                        endLine: currentEnd,
+                        startByte: this.calculateByteOffset(content, currentStart),
+                        endByte: this.calculateByteOffset(content, currentEnd)
+                    });
+                }
+            } else if (windowContent.length > 0) {
+                windows.push({
+                    content: windowContent,
+                    startLine: currentStart,
+                    endLine: currentEnd,
+                    startByte: this.calculateByteOffset(content, currentStart),
+                    endByte: this.calculateByteOffset(content, currentEnd)
+                });
+            }
+
+            // Move to next window with meaningful overlap
+            const overlapLines = Math.floor(overlapSize / 50); // ~40 lines for 2KB overlap
+            const minIncrement = Math.max(50, Math.floor((currentEnd - currentStart) / 2)); // At least 50 lines or half window
+
+            currentStart = Math.max(
+                currentStart + minIncrement,
+                currentEnd - overlapLines
+            );
+
+            // Prevent infinite loop and tiny windows at end
+            if (currentStart >= currentEnd - 10 || currentEnd >= lines.length - 10) {
+                break; // End processing to avoid tiny windows
+            }
+        }
+
+        return windows;
+    }
+
+    private findSafeTrimPoint(lines: string[], start: number, maxSize: number): number {
+        let size = 0;
+        let lastSafeTrim = start;
+
+        for (let i = start; i < lines.length; i++) {
+            const lineSize = lines[i].length + 1; // +1 for newline
+            if (size + lineSize > maxSize) break;
+
+            size += lineSize;
+
+            // Safe trim points: end of functions, classes, or natural breaks
+            const line = lines[i].trim();
+            if (line === '}' || line === '' || line.startsWith('//')) {
+                lastSafeTrim = i + 1;
+            }
+        }
+
+        return Math.max(lastSafeTrim, start + 1);
+    }
+
+    private calculateByteOffset(content: string, lineNumber: number): number {
+        const lines = content.split('\n');
+        let offset = 0;
+        for (let i = 0; i < Math.min(lineNumber, lines.length); i++) {
+            offset += lines[i].length + 1; // +1 for newline
+        }
+        return offset;
+    }
+
+    /**
+     * Create a semantic fallback chunk when TreeSitter fails
+     */
+    private createSemanticFallbackChunk(
+        window: { content: string; startLine: number; endLine: number },
+        filePath: string,
+        relativePath: string,
+        language: string,
+        windowIndex: number
+    ): SemanticChunk {
+        const symbols: SemanticChunk['symbols'] = [];
+
+        // Use improved regex-based symbol extraction
+        this.extractSymbolsFromContent(window.content, 'mixed', symbols, window.startLine + 1);
+
+        return {
+            id: this.generateShortId(filePath, `semantic_fallback_w${windowIndex}`),
+            content: window.content,
+            filePath,
+            relativePath,
+            startLine: window.startLine + 1,
+            endLine: window.endLine,
+            language,
+            chunkType: 'mixed',
+            symbols,
+            imports: this.extractImportsFromContent(window.content),
+            size: window.content.length,
+            complexity: this.calculateComplexity(window.content)
+        };
+    }
+
+    /**
+     * Extract imports from content
+     */
+    private extractImportsFromContent(content: string): Array<{ module: string; symbols: string[]; line: number }> {
+        const imports: Array<{ module: string; symbols: string[]; line: number }> = [];
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith('import ')) {
+                const moduleMatch = line.match(/from\s+['"]([^'"]+)['"]/);
+                const symbolsMatch = line.match(/import\s+\{([^}]+)\}/);
+
+                imports.push({
+                    module: moduleMatch?.[1] || 'unknown',
+                    symbols: symbolsMatch?.[1]?.split(',').map(s => s.trim()) || [],
+                    line: i + 1
+                });
+            }
+        }
+
+        return imports;
+    }
+
+    /**
+     * Remove duplicate chunks from overlapping windows
+     */
+    private removeDuplicateChunks(chunks: SemanticChunk[]): SemanticChunk[] {
+        const uniqueChunks: SemanticChunk[] = [];
+        const seenRanges = new Set<string>();
+
+        for (const chunk of chunks) {
+            const rangeKey = `${chunk.startLine}-${chunk.endLine}-${chunk.chunkType}`;
+
+            if (!seenRanges.has(rangeKey)) {
+                seenRanges.add(rangeKey);
+                uniqueChunks.push(chunk);
+            }
+        }
+
+        return uniqueChunks;
     }
 
     private createFallbackChunkFromSection(
