@@ -149,6 +149,7 @@ export class StandaloneCodexMcp {
         // Create metadata callback for IndexingOrchestrator - now that NamespaceManagerService is ready
         const metadataCallback = async (codebasePath: string, indexedData: any) => {
             await this.namespaceManagerService.registerCodebase(
+                
                 codebasePath,
                 indexedData.totalChunks,
                 new Date(indexedData.indexedAt)
@@ -188,6 +189,9 @@ export class StandaloneCodexMcp {
         chunksCreated: number;
         processingTimeMs: number;
         message: string;
+        errorCount?: number;
+        errorsPreview?: string[]; // first few error messages
+        failedFiles?: string[];
     }> {
         const indexingRequest = {
             codebasePath,
@@ -197,6 +201,17 @@ export class StandaloneCodexMcp {
         };
         
         const indexResult = await this.indexingOrchestrator.indexCodebase(indexingRequest);
+
+        // Extract error details (best-effort)
+        const rawErrors: any[] = Array.isArray((indexResult as any).errors) ? (indexResult as any).errors : [];
+        const errorsPreview: string[] = rawErrors
+            .map((e: any) => typeof e === 'string' ? e : (e?.message || JSON.stringify(e)))
+            .slice(0, 5);
+        const failedFiles: string[] = Array.isArray((indexResult as any).failedFiles)
+            ? (indexResult as any).failedFiles
+            : Array.isArray((indexResult as any)?.metadata?.failedFiles)
+                ? (indexResult as any).metadata.failedFiles
+                : [];
         
         return {
             success: indexResult.success,
@@ -206,7 +221,10 @@ export class StandaloneCodexMcp {
             processingTimeMs: indexResult.metadata?.indexingTime || 0,
             message: indexResult.success 
                 ? `Successfully indexed ${indexResult.metadata?.totalFiles || 0} files into ${indexResult.chunks?.length || 0} intelligent chunks`
-                : `Indexing failed with ${indexResult.errors?.length || 0} errors`
+                : `Indexing failed (${rawErrors.length} error(s))${errorsPreview.length ? `: ${errorsPreview[0]}` : ''}`,
+            errorCount: rawErrors.length || undefined,
+            errorsPreview: errorsPreview.length ? errorsPreview : undefined,
+            failedFiles: failedFiles.length ? failedFiles : undefined
         };
     }
 
@@ -785,6 +803,16 @@ class StandaloneMCPServer {
         };
 
         console.error('🔧 Capabilities:', JSON.stringify(capabilities));
+
+        // Wildcard hosted backend mode indicator
+        const wildcardEnabled = !!process.env.WILDCARD_API_KEY;
+        const wildcardUrl = process.env.WILDCARD_API_URL || 'http://localhost:4000';
+        if (wildcardEnabled) {
+            console.error(`🌐 Wildcard backend: ENABLED (using hosted Fastify backend)`);
+            console.error(`   Base URL: ${wildcardUrl}`);
+        } else {
+            console.error(`🌐 Wildcard backend: disabled (direct provider mode)`);
+        }
 
         if (!config.jinaApiKey || config.jinaApiKey === 'test') {
             console.error('⚠️  Jina API key not provided - result reranking will be disabled');

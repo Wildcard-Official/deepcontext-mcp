@@ -5,6 +5,7 @@
 
 import { Logger } from '../utils/Logger.js';
 import { TurbopufferStore, VectorSearchResult } from '../types/search.js';
+import { fetchMirrored } from '../utils/wildcardFetch.js';
 
 export interface VectorStoreResult {
     id: string;
@@ -46,23 +47,27 @@ export class TurbopufferService implements TurbopufferStore {
      * Upsert vectors to Turbopuffer namespace
      */
     async upsert(namespace: string, vectors: any[]): Promise<void> {
-        const response = await fetch(`${this.baseUrl}/namespaces/${namespace}`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                upsert_rows: vectors,
-                distance_metric: 'cosine_distance',
-                schema: {
-                    content: {
-                        type: 'string',
-                        full_text_search: true
+        const response = await fetchMirrored(
+            `${this.baseUrl}/namespaces/${namespace}`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    upsert_rows: vectors,
+                    distance_metric: 'cosine_distance',
+                    schema: {
+                        content: {
+                            type: 'string',
+                            full_text_search: true
+                        }
                     }
-                }
-            })
-        });
+                })
+            },
+            `/vectordb/turbopuffer/namespaces/${namespace}`
+        );
         
         if (!response.ok) {
             const error = await response.text();
@@ -96,14 +101,19 @@ export class TurbopufferService implements TurbopufferStore {
             requestBody.filters = options.filters;
         }
 
-        const response = await fetch(`${this.baseUrl}/namespaces/${namespace}/query`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.apiKey}`,
-                'Content-Type': 'application/json'
+        const response = await fetchMirrored(
+            `${this.baseUrl}/namespaces/${namespace}/query`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
             },
-            body: JSON.stringify(requestBody)
-        });
+            `/vectordb/turbopuffer/namespaces/${namespace}/query`,
+            { method: 'POST', body: JSON.stringify(requestBody) }
+        );
         
         if (!response.ok) {
             const error = await response.text();
@@ -134,29 +144,40 @@ export class TurbopufferService implements TurbopufferStore {
         const bm25Weight = options.bm25Weight || 0.4; // Increased for better keyword matching
         
         // Use Turbopuffer's queries array format (same as backend implementation)
-        const response = await fetch(`${this.baseUrl}/namespaces/${namespace}/query`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.apiKey}`
+        const response = await fetchMirrored(
+            `${this.baseUrl}/namespaces/${namespace}/query`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    queries: [
+                        {
+                            rank_by: ['vector', 'ANN', options.embedding],
+                            top_k: Math.min(limit * 2, 50),
+                            include_attributes: true
+                        },
+                        {
+                            rank_by: ['content', 'BM25', options.query],
+                            top_k: Math.min(limit * 2, 50),
+                            include_attributes: true
+                        }
+                    ]
+                })
             },
-            body: JSON.stringify({
-                queries: [
-                    // Vector search query
-                    {
-                        rank_by: ['vector', 'ANN', options.embedding],
-                        top_k: Math.min(limit * 2, 50),
-                        include_attributes: true
-                    },
-                    // BM25 search query
-                    {
-                        rank_by: ['content', 'BM25', options.query],
-                        top_k: Math.min(limit * 2, 50),
-                        include_attributes: true
-                    }
-                ]
-            })
-        });
+            `/vectordb/turbopuffer/namespaces/${namespace}/query`,
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    queries: [
+                        { rank_by: ['vector', 'ANN', options.embedding], top_k: Math.min(limit * 2, 50), include_attributes: true },
+                        { rank_by: ['content', 'BM25', options.query],   top_k: Math.min(limit * 2, 50), include_attributes: true }
+                    ]
+                })
+            }
+        );
 
         if (!response.ok) {
             const error = await response.text();
@@ -174,10 +195,13 @@ export class TurbopufferService implements TurbopufferStore {
      */
     async checkNamespaceExists(namespace: string): Promise<boolean> {
         try {
-            const response = await fetch(`${this.baseUrl}/namespaces/${namespace}`, {
-                headers: { 'Authorization': `Bearer ${this.apiKey}` }
-            });
-            return response.ok;
+            const res = await fetchMirrored(
+                `${this.baseUrl}/namespaces/${namespace}`,
+                { method: 'GET', headers: { 'Authorization': `Bearer ${this.apiKey}` } },
+                `/vectordb/turbopuffer/namespaces/${namespace}`,
+                { method: 'GET' }
+            );
+            return res.ok;
         } catch {
             return false;
         }
@@ -188,14 +212,13 @@ export class TurbopufferService implements TurbopufferStore {
      */
     async clearNamespace(namespace: string): Promise<void> {
         try {
-            const response = await fetch(`${this.baseUrl}/namespaces/${namespace}`, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${this.apiKey}`
-                }
-            });
-            
-            if (response.ok) {
+            const res = await fetchMirrored(
+                `${this.baseUrl}/namespaces/${namespace}`,
+                { method: 'DELETE', headers: { 'Authorization': `Bearer ${this.apiKey}` } },
+                `/vectordb/turbopuffer/namespaces/${namespace}`,
+                { method: 'DELETE' }
+            );
+            if (res.ok) {
                 this.logger.info(`✅ Cleared namespace: ${namespace}`);
             }
         } catch (error) {
@@ -208,11 +231,9 @@ export class TurbopufferService implements TurbopufferStore {
      */
     async getChunkIdsForFile(namespace: string, filePath: string): Promise<string[]> {
         try {
-            const allChunkIds: string[] = [];
-            let hasMore = true;
-            
-            while (hasMore) {
-                const queryResponse = await fetch(`${this.baseUrl}/namespaces/${namespace}/query`, {
+            const res = await fetchMirrored(
+                `${this.baseUrl}/namespaces/${namespace}/query`,
+                {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${this.apiKey}`,
@@ -223,31 +244,28 @@ export class TurbopufferService implements TurbopufferStore {
                         top_k: 1000,
                         include_attributes: false
                     })
-                });
-
-                if (!queryResponse.ok) {
-                    if (queryResponse.status === 422) {
-                        // Namespace doesn't exist yet - no existing chunks to find
-                        return allChunkIds; // Return empty array
-                    }
-                    throw new Error(`Query failed: ${queryResponse.status}`);
+                },
+                `/vectordb/turbopuffer/namespaces/${namespace}/query`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        filters: [['filePath', 'Eq', filePath]],
+                        top_k: 1000,
+                        include_attributes: false
+                    })
                 }
-
-                const queryData = await queryResponse.json();
-                const chunkIds = (queryData.rows || []).map((row: any) => row.id);
-
-                if (chunkIds.length === 0) {
-                    hasMore = false;
-                } else {
-                    allChunkIds.push(...chunkIds);
-                    hasMore = chunkIds.length === 1000; // Continue if we got a full batch
+            );
+            if (!res.ok) {
+                if (res.status === 422) {
+                    return [];
                 }
+                throw new Error(`Query failed: ${res.status}`);
             }
-
-            return allChunkIds;
+            const queryData = await res.json();
+            return (queryData.rows || []).map((row: any) => row.id);
         } catch (error) {
             this.logger.warn(`Failed to get existing chunk IDs for ${filePath}: ${error}`);
-            return []; // Return empty array on error - better to have duplicates than lose data
+            return [];
         }
     }
 
@@ -256,33 +274,29 @@ export class TurbopufferService implements TurbopufferStore {
      */
     async deleteChunksByIds(namespace: string, chunkIds: string[]): Promise<number> {
         if (chunkIds.length === 0) return 0;
-
         try {
             let totalDeleted = 0;
-            
-            // Process in batches of 1000 for safety
             for (let i = 0; i < chunkIds.length; i += 1000) {
                 const batch = chunkIds.slice(i, i + 1000);
-                
-                const deleteResponse = await fetch(`${this.baseUrl}/namespaces/${namespace}`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${this.apiKey}`,
-                        'Content-Type': 'application/json'
+                const res = await fetchMirrored(
+                    `${this.baseUrl}/namespaces/${namespace}`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${this.apiKey}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ deletes: batch })
                     },
-                    body: JSON.stringify({
-                        deletes: batch
-                    })
-                });
-
-                if (!deleteResponse.ok) {
-                    const error = await deleteResponse.text();
-                    throw new Error(`Delete batch failed: ${deleteResponse.status} ${error}`);
+                    `/vectordb/turbopuffer/namespaces/${namespace}`,
+                    { method: 'POST', body: JSON.stringify({ deletes: batch }) }
+                );
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(`Delete batch failed: ${res.status} ${text}`);
                 }
-
                 totalDeleted += batch.length;
             }
-
             return totalDeleted;
         } catch (error) {
             throw new Error(`Failed to delete chunks: ${error}`);

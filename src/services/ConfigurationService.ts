@@ -6,6 +6,7 @@
 import { Logger } from '../utils/Logger.js';
 
 export interface McpConfig {
+    wildcardApiKey: string;
     jinaApiKey: string;
     turbopufferApiKey: string;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
@@ -64,6 +65,7 @@ export class ConfigurationService {
                 : 'info';
 
         const baseConfig: McpConfig = {
+            wildcardApiKey: process.env.WILDCARD_API_KEY || 'test',
             jinaApiKey: process.env.JINA_API_KEY || 'test',
             turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
             logLevel: validLogLevel
@@ -111,16 +113,16 @@ export class ConfigurationService {
         const warnings: string[] = [];
 
         // Check required keys
-        if (!this.config.jinaApiKey) {
-            errors.push('Jina API key is required');
-        } else if (!allowTestKeys && this.config.jinaApiKey === 'test') {
-            warnings.push('Using test Jina API key - functionality will be limited');
+        if (!this.config.wildcardApiKey) {
+            errors.push('Wildcard API key is required. Get it from https://wild-card.ai/code-context-mcp');
         }
 
-        if (!this.config.turbopufferApiKey) {
+        if (!this.config.wildcardApiKey && !this.config.jinaApiKey) {
+            errors.push('Jina API key is required');
+        }
+
+        if (!this.config.wildcardApiKey && !this.config.turbopufferApiKey) {
             errors.push('Turbopuffer API key is required');
-        } else if (!allowTestKeys && this.config.turbopufferApiKey === 'test') {
-            warnings.push('Using test Turbopuffer API key - functionality will be limited');
         }
 
         // OpenAI API key no longer required
