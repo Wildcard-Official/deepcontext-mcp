@@ -189,9 +189,6 @@ export class StandaloneCodexMcp {
         chunksCreated: number;
         processingTimeMs: number;
         message: string;
-        errorCount?: number;
-        errorsPreview?: string[]; // first few error messages
-        failedFiles?: string[];
     }> {
         const indexingRequest = {
             codebasePath,
@@ -201,17 +198,6 @@ export class StandaloneCodexMcp {
         };
         
         const indexResult = await this.indexingOrchestrator.indexCodebase(indexingRequest);
-
-        // Extract error details (best-effort)
-        const rawErrors: any[] = Array.isArray((indexResult as any).errors) ? (indexResult as any).errors : [];
-        const errorsPreview: string[] = rawErrors
-            .map((e: any) => typeof e === 'string' ? e : (e?.message || JSON.stringify(e)))
-            .slice(0, 5);
-        const failedFiles: string[] = Array.isArray((indexResult as any).failedFiles)
-            ? (indexResult as any).failedFiles
-            : Array.isArray((indexResult as any)?.metadata?.failedFiles)
-                ? (indexResult as any).metadata.failedFiles
-                : [];
         
         return {
             success: indexResult.success,
@@ -221,11 +207,8 @@ export class StandaloneCodexMcp {
             processingTimeMs: indexResult.metadata?.indexingTime || 0,
             message: indexResult.success 
                 ? `Successfully indexed ${indexResult.metadata?.totalFiles || 0} files into ${indexResult.chunks?.length || 0} intelligent chunks`
-                : `Indexing failed (${rawErrors.length} error(s))${errorsPreview.length ? `: ${errorsPreview[0]}` : ''}`,
-            errorCount: rawErrors.length || undefined,
-            errorsPreview: errorsPreview.length ? errorsPreview : undefined,
-            failedFiles: failedFiles.length ? failedFiles : undefined
-        };
+                : `Indexing failed with ${indexResult.errors?.length || 0} errors`        
+            };
     }
 
     /**
