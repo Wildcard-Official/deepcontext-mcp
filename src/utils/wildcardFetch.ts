@@ -3,7 +3,7 @@ export function useWildcard(): boolean {
 }
 
 export function wildcardBaseUrl(): string {
-  return process.env.WILDCARD_API_URL || 'http://localhost:4000';
+  return process.env.WILDCARD_API_URL || 'https://intelligent-context-backend.onrender.com' || 'http://localhost:4000';
 }
 
 export async function wildcardFetch(
@@ -12,11 +12,22 @@ export async function wildcardFetch(
   prefix: string = ''
 ): Promise<Response> {
   const url = `${wildcardBaseUrl()}${prefix}${path}`;
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(init.headers || {}),
+
+  const hasBody = init.body !== undefined && init.body !== null;
+  const incomingHeaders = (init.headers || {}) as Record<string, string>;
+  const headers: Record<string, string> = {
+    ...incomingHeaders,
     'x-api-key': process.env.WILDCARD_API_KEY as string,
-  } as Record<string, string>;
+  };
+
+  // Only set JSON content type if a body is present; otherwise remove to avoid empty JSON body errors
+  const hasContentType = 'Content-Type' in headers || 'content-type' in headers;
+  if (hasBody) {
+    if (!hasContentType) headers['Content-Type'] = 'application/json';
+  } else {
+    delete headers['Content-Type'];
+    delete headers['content-type'];
+  }
 
   return fetch(url, { ...init, headers });
 }

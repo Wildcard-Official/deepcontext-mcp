@@ -95,6 +95,14 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: EventType.TURBOPUFFER_NAMESPACE_CLEAR,
       reply
     });
+
+    // After forwarding the delete to the provider, remove the local Namespace record
+    try {
+      await prisma.namespace.delete({ where: { id: nsRecord.id } });
+      fastify.log.info({ namespace: name, apiKeyId }, 'Deleted local namespace record');
+    } catch (err) {
+      fastify.log.warn({ err, namespace: name, apiKeyId }, 'Failed to delete local namespace record');
+    }
   });
 
   // Hybrid

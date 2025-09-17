@@ -806,7 +806,7 @@ class StandaloneMCPServer {
 
         // Wildcard hosted backend mode indicator
         const wildcardEnabled = !!process.env.WILDCARD_API_KEY;
-        const wildcardUrl = process.env.WILDCARD_API_URL || 'http://localhost:4000';
+        const wildcardUrl = process.env.WILDCARD_API_URL || 'https://intelligent-context-backend.onrender.com' || 'http://localhost:4000';
         if (wildcardEnabled) {
             console.error(`🌐 Wildcard backend: ENABLED (using hosted Fastify backend)`);
             console.error(`   Base URL: ${wildcardUrl}`);
