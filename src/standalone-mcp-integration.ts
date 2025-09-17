@@ -541,7 +541,7 @@ class StandaloneMCPServer {
                         properties: {
                             codebase_path: {
                                 type: 'string',
-                                description: 'Path to the directory containing source code files (automatically resolved to absolute path)'
+                                description: 'Absolute or relative path to the directory containing source code files'
                             },
                             force_reindex: {
                                 type: 'boolean',
@@ -724,20 +724,11 @@ class StandaloneMCPServer {
                     
                     case 'get_indexing_status':
                         const status = await this.codexMcp.getIndexingStatus((args as any).codebase_path);
-
-                        // Add readable timestamp
-                        const result: any = { ...status };
-                        if (status.currentCodebase?.indexedAt) {
-                            result.currentCodebase = {
-                                ...status.currentCodebase,
-                                lastIndexed: new Date(status.currentCodebase.indexedAt).toLocaleString()
-                            };
-                        }
-
+                        
                         return {
                             content: [{
                                 type: 'text',
-                                text: JSON.stringify(result, null, 2)
+                                text: JSON.stringify(status, null, 2)
                             }]
                         };
                     
