@@ -4,6 +4,7 @@
  */
 
 import { Logger } from '../utils/Logger.js';
+import { fetchMirrored } from '../utils/wildcardFetch.js';
 
 export interface RerankerResult {
     index: number;
@@ -55,18 +56,23 @@ export class JinaApiService {
         // Truncate if needed for Jina API limits
         const processedText = this.truncateForJinaApi(text);
         
-        const response = await fetch(`${this.baseUrl}/embeddings`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.apiKey}`,
-                'Content-Type': 'application/json'
+        const response = await fetchMirrored(
+            `${this.baseUrl}/embeddings`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    input: [processedText],
+                    model: 'jina-embeddings-v3',
+                    dimensions: 1024
+                })
             },
-            body: JSON.stringify({
-                input: [processedText],
-                model: 'jina-embeddings-v3',
-                dimensions: 1024
-            })
-        });
+            `/embeddings/jina/embeddings`,
+            { method: 'POST', body: JSON.stringify({ input: [processedText] }) }
+        );
         
         if (!response.ok) {
             throw new Error(`Jina API error: ${response.statusText}`);
@@ -85,18 +91,23 @@ export class JinaApiService {
         // Filter and truncate texts that exceed Jina API limit (8194 tokens ≈ 32KB)
         const processedTexts = texts.map(text => this.truncateForJinaApi(text));
         
-        const response = await fetch(`${this.baseUrl}/embeddings`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.apiKey}`,
-                'Content-Type': 'application/json'
+        const response = await fetchMirrored(
+            `${this.baseUrl}/embeddings`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    input: processedTexts,
+                    model: 'jina-embeddings-v3',
+                    dimensions: 1024
+                })
             },
-            body: JSON.stringify({
-                input: processedTexts,
-                model: 'jina-embeddings-v3',
-                dimensions: 1024
-            })
-        });
+            `/embeddings/jina/embeddings`,
+            { method: 'POST', body: JSON.stringify({ input: processedTexts }) }
+        );
         
         if (!response.ok) {
             const error = await response.text();
@@ -111,20 +122,34 @@ export class JinaApiService {
      * Rerank search results using Jina reranker - returns raw indices and scores
      */
     async rerank(query: string, documents: string[], topN?: number): Promise<Array<{ index: number; relevance_score: number }>> {
-        const response = await fetch(`${this.baseUrl}/rerank`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.apiKey}`,
-                'Content-Type': 'application/json'
+        const response = await fetchMirrored(
+            `${this.baseUrl}/rerank`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'jina-reranker-v2-base-multilingual',
+                    query,
+                    documents,
+                    top_n: topN || documents.length,
+                    return_documents: false
+                })
             },
-            body: JSON.stringify({
-                model: 'jina-reranker-v2-base-multilingual',
-                query,
-                documents,
-                top_n: topN || documents.length,
-                return_documents: false
-            })
-        });
+            `/embeddings/jina/rerank`,
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    model: 'jina-reranker-v2-base-multilingual',
+                    query,
+                    documents,
+                    top_n: topN || documents.length,
+                    return_documents: false
+                })
+            }
+        );
 
         if (!response.ok) {
             const error = await response.text();
@@ -171,21 +196,35 @@ export class JinaApiService {
         });
 
         try {
-            const response = await fetch(`${this.baseUrl}/rerank`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.apiKey}`
+            const response = await fetchMirrored(
+                `${this.baseUrl}/rerank`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${this.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: 'jina-reranker-v2-base-multilingual',
+                        query: query,
+                        documents: documents,
+                        top_n: Math.min(results.length, 20),
+                        return_documents: false
+                    }),
+                    signal: AbortSignal.timeout(15000)
                 },
-                body: JSON.stringify({
-                    model: 'jina-reranker-v2-base-multilingual',
-                    query: query,
-                    documents: documents,
-                    top_n: Math.min(results.length, 20), // Rerank up to 20 results
-                    return_documents: false // We already have the documents
-                }),
-                signal: AbortSignal.timeout(15000)
-            });
+                `/embeddings/jina/rerank`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        model: 'jina-reranker-v2-base-multilingual',
+                        query: query,
+                        documents: documents,
+                        top_n: Math.min(results.length, 20),
+                        return_documents: false
+                    })
+                }
+            );
 
             if (!response.ok) {
                 const errorText = await response.text();
