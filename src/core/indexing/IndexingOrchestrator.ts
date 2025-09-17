@@ -260,7 +260,9 @@ export class IndexingOrchestrator {
                     .map(symbol => ({
                         name: symbol.name,
                         type: symbol.type as 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace',
-                        line: symbol.startLine,
+                        startLine: symbol.startLine,
+                        endLine: symbol.endLine,
+                        line: symbol.startLine, // Keep for backward compatibility
                         scope: symbol.scope
                     }));
 

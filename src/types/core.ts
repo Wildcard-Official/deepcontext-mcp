@@ -38,8 +38,10 @@ export interface SearchRequest {
 export interface SearchResponse {
     success: boolean;
     results: SearchResult[];
-    searchTime: number;
+    totalResults: number;
+    searchTimeMs: number;
     strategy: string;
+    message: string;
     metadata?: {
         vectorResults?: number;
         bm25Results?: number;
@@ -80,7 +82,9 @@ export interface CodeChunk {
 export interface SymbolInfo {
     name: string;
     type: 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace';
-    line: number;
+    startLine: number;
+    endLine: number;
+    line: number; // Keep for backward compatibility
     scope?: string;
 }
 
@@ -88,6 +92,9 @@ export interface ImportInfo {
     module: string;
     symbols: string[];
     line: number;
+    isDefault?: boolean;
+    isNamespace?: boolean;
+    source?: string;
 }
 
 export interface ExportInfo {
