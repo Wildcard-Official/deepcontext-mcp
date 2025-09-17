@@ -85,7 +85,7 @@ export class TreeSitterChunkExtractor {
     
     // Chunking parameters (based on research)
     private readonly MAX_CHUNK_SIZE = 2000; // characters, similar to astchunk
-    private readonly MIN_CHUNK_SIZE = 100;  // avoid tiny fragments
+    private readonly MIN_CHUNK_SIZE = 30;   // capture small functions while avoiding tiny fragments
     private readonly PREFERRED_CHUNK_SIZE = 1000; // sweet spot for search
 
     constructor() {
@@ -185,16 +185,8 @@ export class TreeSitterChunkExtractor {
                 }
             }
 
-            // Handle any remaining content that wasn't captured in semantic units
-            const uncapturedChunks = this.handleUncapturedContent(
-                content,
-                chunks,
-                filePath,
-                relativePath,
-                language
-            );
-            
-            chunks.push(...uncapturedChunks);
+            // Note: Comprehensive gap-filling is handled in createComprehensiveWindowChunks() for large files
+            // Small files use semantic units directly without gaps
 
             const processingTime = Date.now() - startTime;
             const totalNodes = this.countNodes(rootNode);
@@ -336,8 +328,8 @@ export class TreeSitterChunkExtractor {
         // Extract symbols from this unit
         const symbols = this.extractSymbolsFromUnit(unit);
 
-        // Extract imports (look at the beginning of the file)
-        const imports = this.extractImportsFromUnit(unit);
+        // Extract imports using the comprehensive import extraction
+        const imports = this.extractImportsFromContent(unit.content);
         
         // Generate unique chunk ID (short format for Turbopuffer)
         const chunkId = this.generateShortId(filePath, `${unit.startLine}-${unit.endLine}`);
@@ -471,10 +463,6 @@ export class TreeSitterChunkExtractor {
         }
     }
 
-    private extractImportsFromUnit(unit: SemanticUnit): SemanticChunk['imports'] {
-        // For now, return empty - imports are typically at file level
-        return [];
-    }
 
     private calculateComplexity(content: string): 'low' | 'medium' | 'high' {
         const lines = content.split('\n').length;
@@ -526,17 +514,6 @@ export class TreeSitterChunkExtractor {
         return count;
     }
 
-    private handleUncapturedContent(
-        content: string,
-        existingChunks: SemanticChunk[],
-        filePath: string,
-        relativePath: string,
-        language: string
-    ): SemanticChunk[] {
-        // For now, don't create additional chunks for uncaptured content
-        // This could be enhanced to handle module-level code, comments, etc.
-        return [];
-    }
 
     private async handleLargeFile(
         content: string,
@@ -1060,34 +1037,6 @@ export class TreeSitterChunkExtractor {
         return uniqueChunks;
     }
 
-    private createFallbackChunkFromSection(
-        content: string,
-        filePath: string,
-        relativePath: string,
-        language: string,
-        startLineOffset: number
-    ): SemanticChunk {
-        const lines = content.split('\n');
-        const symbols: SemanticChunk['symbols'] = [];
-        
-        // Extract symbols using regex as fallback
-        this.extractSymbolsFromContent(content, 'mixed', symbols, startLineOffset + 1);
-        
-        return {
-            id: this.generateShortId(filePath, `fallback_${startLineOffset}`),
-            content,
-            filePath,
-            relativePath,
-            startLine: startLineOffset + 1,
-            endLine: startLineOffset + lines.length,
-            language,
-            chunkType: 'mixed',
-            symbols,
-            imports: [],
-            size: content.length,
-            complexity: this.calculateComplexity(content)
-        };
-    }
 
     private fallbackToSimpleChunking(
         content: string,

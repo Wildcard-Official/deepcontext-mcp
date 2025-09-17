@@ -56,10 +56,17 @@ export class ConfigurationService {
      * Load configuration from environment variables and overrides
      */
     private loadConfig(override?: Partial<McpConfig>): McpConfig {
+        const envLogLevel = process.env.LOG_LEVEL;
+        const validLogLevel: 'debug' | 'info' | 'warn' | 'error' =
+            envLogLevel === 'debug' || envLogLevel === 'info' ||
+            envLogLevel === 'warn' || envLogLevel === 'error'
+                ? envLogLevel
+                : 'info';
+
         const baseConfig: McpConfig = {
             jinaApiKey: process.env.JINA_API_KEY || 'test',
             turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
-            logLevel: (process.env.LOG_LEVEL as any) || 'info'
+            logLevel: validLogLevel
         };
         
         const finalConfig = { ...baseConfig, ...override };

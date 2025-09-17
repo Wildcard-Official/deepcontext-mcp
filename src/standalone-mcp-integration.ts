@@ -191,7 +191,7 @@ export class StandaloneCodexMcp {
     }> {
         const indexingRequest = {
             codebasePath,
-            force: forceReindex,
+            forceReindex: forceReindex,
             enableContentFiltering: true,
             enableDependencyAnalysis: true
         };
@@ -502,17 +502,21 @@ class StandaloneMCPServer {
             const tools: Tool[] = [
                 {
                     name: 'index_codebase',
-                    description: 'Index a codebase for intelligent search and analysis',
+                    description: `Prepares a codebase for intelligent search by creating a searchable index.
+
+**When to use**: Call this first before searching any new codebase. Required prerequisite for search_codebase.
+
+**Use force_reindex=true when**: Code has changed significantly or search results seem outdated.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             codebase_path: {
                                 type: 'string',
-                                description: 'Path to the codebase to index'
+                                description: 'Absolute or relative path to the directory containing source code files'
                             },
                             force_reindex: {
                                 type: 'boolean',
-                                description: 'Force reindexing even if already indexed',
+                                description: 'Force complete reindexing even if already indexed (default: false)',
                                 default: false
                             }
                         },
@@ -521,34 +525,31 @@ class StandaloneMCPServer {
                 },
                 {
                     name: 'search_codebase',
-                    description: `
-Search the indexed codebase using natural language or specific terms with intelligent hybrid search (vector + BM25).
+                    description: `Finds relevant code in an indexed codebase using natural language or keyword queries.
 
-🎯 **When to Use**:
-This tool should be used for all code-related searches in this project:
-- **Code search**: Find specific functions, classes, or implementations
-- **Context gathering**: Get relevant code context before making changes  
-- **Architecture understanding**: Understand how systems like hybrid search are implemented
-- **Feature analysis**: Analyze existing functionality and patterns
+**When to use**:
+- Find specific functions, classes, or code patterns
+- Get context before making changes to understand dependencies
+- Explore how existing systems work
+- Locate examples of API usage or patterns
 
-✨ **Usage Guidance**:
-- If the codebase is not indexed, this tool will return an error indicating indexing is required first.
-- Use the index_codebase tool to index the codebase before searching.
-`,
+**Returns**: Code chunks with file paths, line numbers, and relevance scores.
+
+**Prerequisite**: Codebase must be indexed first with index_codebase.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             query: {
                                 type: 'string',
-                                description: 'Search query (natural language or specific terms)'
+                                description: 'Natural language or keyword search query describing what code to find'
                             },
                             codebase_path: {
                                 type: 'string',
-                                description: 'Path to the codebase to search (optional if only one indexed)'
+                                description: 'Path to the codebase to search (optional if only one codebase indexed)'
                             },
                             max_results: {
                                 type: 'number',
-                                description: 'Maximum number of results to return',
+                                description: 'Maximum number of code chunks to return (default: 5)',
                                 default: 5
                             }
                         },
@@ -557,26 +558,41 @@ This tool should be used for all code-related searches in this project:
                 },
                 {
                     name: 'get_indexing_status',
-                    description: 'Get the indexing status of codebases',
+                    description: `Check if codebases are indexed and get their status information.
+
+**When to use**:
+- Before indexing to check if already done
+- Debug why search returned no results
+- Confirm indexing completed successfully
+- Get overview of all indexed codebases
+
+**Returns**: Indexing status, file counts, and timestamps.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             codebase_path: {
                                 type: 'string',
-                                description: 'Optional: Get status for specific codebase'
+                                description: 'Optional: Path to specific codebase to check. Omit to get status of all indexed codebases'
                             }
                         }
                     }
                 },
                 {
                     name: 'clear_index',
-                    description: 'Clear index data for a codebase',
+                    description: `Permanently removes all indexed data for a codebase.
+
+**When to use**:
+- Clear stale data before reindexing after major code changes
+- Remove old indexed codebases no longer needed
+- Fix corrupted index causing search issues
+
+**Warning**: Destructive operation. All search capabilities lost until reindexing.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             codebase_path: {
                                 type: 'string',
-                                description: 'Path to the codebase to clear (optional to clear all)'
+                                description: 'Path to the codebase to clear. Omit to clear ALL indexed codebases (use with caution)'
                             }
                         }
                     }

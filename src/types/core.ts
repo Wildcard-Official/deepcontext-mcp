@@ -8,6 +8,11 @@ export interface IndexingRequest {
     incrementalMode?: boolean;
     maxFiles?: number;
     excludePatterns?: string[];
+    enableDependencyAnalysis?: boolean;
+    enableContentFiltering?: boolean;
+    maxChunkSize?: number;
+    maxChunkLines?: number;
+    supportedLanguages?: string[];
 }
 
 export interface IndexingResult {
@@ -33,10 +38,14 @@ export interface SearchRequest {
 export interface SearchResponse {
     success: boolean;
     results: SearchResult[];
-    totalResults: number;
-    searchTimeMs: number;
-    query: string;
-    namespace: string;
+    searchTime: number;
+    strategy: string;
+    metadata?: {
+        vectorResults?: number;
+        bm25Results?: number;
+        totalMatches?: number;
+        reranked?: boolean;
+    };
 }
 
 export interface SearchResult {
@@ -46,8 +55,8 @@ export interface SearchResult {
     relativePath: string;
     startLine: number;
     endLine: number;
-    language?: string;
-    symbols?: string[];
+    language: string;
+    symbols: string[];
     score: number;
     context?: string;
 }
@@ -62,29 +71,23 @@ export interface CodeChunk {
     language: string;
     symbols?: SymbolInfo[];
     imports?: ImportInfo[];
-    exports?: ExportInfo[];
+    exports?: string[];
     dependencies?: string[];
-    contextWindow?: number;
     score?: number;
     connections?: any;
-    originalScore?: number;
-    reranked?: boolean;
 }
 
 export interface SymbolInfo {
     name: string;
     type: 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace';
-    startLine: number;
-    endLine: number;
-    signature?: string;
-    accessibility?: 'public' | 'private' | 'protected';
+    line: number;
+    scope?: string;
 }
 
 export interface ImportInfo {
     module: string;
-    importedSymbols: string[];
-    isDefault: boolean;
-    startLine: number;
+    symbols: string[];
+    line: number;
 }
 
 export interface ExportInfo {
@@ -102,7 +105,7 @@ export interface FileMetadata {
     contentHash: string;
     symbols: SymbolInfo[];
     imports: ImportInfo[];
-    exports: ExportInfo[];
+    exports: string[];
 }
 
 export interface DependencyGraph {
