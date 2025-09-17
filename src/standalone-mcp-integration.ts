@@ -524,7 +524,7 @@ class StandaloneMCPServer {
                         properties: {
                             codebase_path: {
                                 type: 'string',
-                                description: 'Absolute or relative path to the directory containing source code files'
+                                description: 'Absolute path to the directory containing source code files'
                             },
                             force_reindex: {
                                 type: 'boolean',
@@ -557,7 +557,7 @@ class StandaloneMCPServer {
                             },
                             codebase_path: {
                                 type: 'string',
-                                description: 'Path to the codebase to search (optional if only one codebase indexed)'
+                                description: 'Absolute path to the codebase to search (optional if only one codebase indexed)'
                             },
                             max_results: {
                                 type: 'number',
@@ -584,7 +584,7 @@ class StandaloneMCPServer {
                         properties: {
                             codebase_path: {
                                 type: 'string',
-                                description: 'Optional: Path to specific codebase to check. Omit to get status of all indexed codebases'
+                                description: 'Optional: Absolute path to specific codebase to check. Omit to get status of all indexed codebases'
                             }
                         }
                     }
@@ -604,7 +604,7 @@ class StandaloneMCPServer {
                         properties: {
                             codebase_path: {
                                 type: 'string',
-                                description: 'Path to the codebase to clear. Omit to clear ALL indexed codebases (use with caution)'
+                                description: 'Absolute path to the codebase to clear. Omit to clear ALL indexed codebases (use with caution)'
                             }
                         }
                     }
