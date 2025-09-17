@@ -9,8 +9,8 @@ import * as crypto from 'crypto';
 
 import { Logger } from '../utils/Logger.js';
 import { FileUtils } from '../utils/FileUtils.js';
-import { IndexingOrchestrator, IndexingRequest } from '../core/indexing/IndexingOrchestrator.js';
-import type { CodeChunk } from '../core/indexing/IndexingOrchestrator.js';
+import { IndexingOrchestrator } from '../core/indexing/IndexingOrchestrator.js';
+import { CodeChunk, IndexingRequest } from '../types/core.js';
 import { LockService } from './LockService.js';
 
 export interface FileProcessingOptions {
@@ -213,10 +213,12 @@ export class FileProcessingService {
         options: FileProcessingOptions = {}
     ): Promise<{ chunksCreated: number; chunksDeleted: number }> {
         const relativePath = path.relative(codebasePath, filePath);
-        this.logger.debug(`🔄 Atomically updating file: ${relativePath}`);
 
         // Step 1: Query existing chunks for rollback capability
-        const existingChunkIds = await this.chunkOperations.getChunkIdsForFile(namespace, filePath);
+        // Chunks are stored with filePath that includes the codebase directory name
+        const codebaseDirectoryName = path.basename(codebasePath);
+        const chunkFilePath = `${codebaseDirectoryName}/${relativePath}`;
+        const existingChunkIds = await this.chunkOperations.getChunkIdsForFile(namespace, chunkFilePath);
         
         // Step 2: Process the file to get new chunks
         const newChunks = await this.processSingleFile(filePath, codebasePath, options);
@@ -267,7 +269,7 @@ export class FileProcessingService {
             // Create a minimal IndexingRequest for single file processing
             const indexingRequest: IndexingRequest = {
                 codebasePath,
-                force: false,
+                forceReindex: false,
                 enableContentFiltering: options.enableContentFiltering !== false,
                 enableDependencyAnalysis: options.enableDependencyAnalysis !== false
             };
@@ -285,11 +287,11 @@ export class FileProcessingService {
     }
 
     /**
-     * Find files with actual content changes using hash-based detection
+     * Find files modified since a specific time with optional hash verification
      */
     async findChangedFiles(
         codebasePath: string,
-        since: Date,  // Kept for backward compatibility but not used
+        since: Date,
         options: FileProcessingOptions = {}
     ): Promise<string[]> {
         try {
@@ -305,7 +307,7 @@ export class FileProcessingService {
 
             for (const filePath of allFiles) {
                 try {
-                    if (await this.isFileModified(codebasePath, filePath)) {
+                    if (await this.isFileModifiedSince(codebasePath, filePath, since)) {
                         changedFiles.push(filePath);
                     }
                 } catch (error) {
@@ -315,7 +317,7 @@ export class FileProcessingService {
                 }
             }
 
-            this.logger.debug(`Found ${changedFiles.length} changed files out of ${allFiles.length} total files`);
+            this.logger.debug(`Found ${changedFiles.length} changed files out of ${allFiles.length} total files (modified since ${since.toISOString()})`);
             return changedFiles;
         } catch (error) {
             this.logger.error('Error finding changed files:', error);
@@ -325,7 +327,44 @@ export class FileProcessingService {
 
 
     /**
-     * Hash-based change detection methods
+     * Check if file was modified since a specific date (time-based with hash verification)
+     */
+    private async isFileModifiedSince(codebasePath: string, filePath: string, since: Date): Promise<boolean> {
+        try {
+            const stats = await fs.stat(filePath);
+
+            // First check: file modification time vs cutoff time
+            if (stats.mtime <= since) {
+                return false; // File hasn't been modified since cutoff
+            }
+
+            // File was modified after cutoff - check if content actually changed
+            const metadata = this.getFileMetadata(codebasePath, filePath);
+
+            if (!metadata) {
+                // File not tracked yet, consider it modified
+                return true;
+            }
+
+            // Quick check: file size
+            if (stats.size !== metadata.size) {
+                return true;
+            }
+
+            // Accurate check: content hash (only if size matches)
+            const content = await fs.readFile(filePath, 'utf-8');
+            const currentHash = this.calculateContentHash(content);
+
+            return currentHash !== metadata.contentHash;
+
+        } catch (error) {
+            // File might not exist or be readable, assume it's changed
+            return true;
+        }
+    }
+
+    /**
+     * Hash-based change detection methods (kept for compatibility)
      */
     private async isFileModified(codebasePath: string, filePath: string): Promise<boolean> {
         const metadata = this.getFileMetadata(codebasePath, filePath);

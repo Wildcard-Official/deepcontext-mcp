@@ -6,6 +6,7 @@
 
 import { Logger } from '../utils/Logger.js';
 
+// Local interface for SemanticSubChunker - simplified for chunking operations
 export interface CodeChunk {
     id: string;
     content: string;

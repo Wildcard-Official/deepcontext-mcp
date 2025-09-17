@@ -8,6 +8,11 @@ export interface IndexingRequest {
     incrementalMode?: boolean;
     maxFiles?: number;
     excludePatterns?: string[];
+    enableDependencyAnalysis?: boolean;
+    enableContentFiltering?: boolean;
+    maxChunkSize?: number;
+    maxChunkLines?: number;
+    supportedLanguages?: string[];
 }
 
 export interface IndexingResult {
@@ -35,8 +40,14 @@ export interface SearchResponse {
     results: SearchResult[];
     totalResults: number;
     searchTimeMs: number;
-    query: string;
-    namespace: string;
+    strategy: string;
+    message: string;
+    metadata?: {
+        vectorResults?: number;
+        bm25Results?: number;
+        totalMatches?: number;
+        reranked?: boolean;
+    };
 }
 
 export interface SearchResult {
@@ -46,8 +57,8 @@ export interface SearchResult {
     relativePath: string;
     startLine: number;
     endLine: number;
-    language?: string;
-    symbols?: string[];
+    language: string;
+    symbols: string[];
     score: number;
     context?: string;
 }
@@ -62,13 +73,10 @@ export interface CodeChunk {
     language: string;
     symbols?: SymbolInfo[];
     imports?: ImportInfo[];
-    exports?: ExportInfo[];
+    exports?: string[];
     dependencies?: string[];
-    contextWindow?: number;
     score?: number;
     connections?: any;
-    originalScore?: number;
-    reranked?: boolean;
 }
 
 export interface SymbolInfo {
@@ -76,15 +84,17 @@ export interface SymbolInfo {
     type: 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace';
     startLine: number;
     endLine: number;
-    signature?: string;
-    accessibility?: 'public' | 'private' | 'protected';
+    line: number; // Keep for backward compatibility
+    scope?: string;
 }
 
 export interface ImportInfo {
     module: string;
-    importedSymbols: string[];
-    isDefault: boolean;
-    startLine: number;
+    symbols: string[];
+    line: number;
+    isDefault?: boolean;
+    isNamespace?: boolean;
+    source?: string;
 }
 
 export interface ExportInfo {
@@ -102,7 +112,7 @@ export interface FileMetadata {
     contentHash: string;
     symbols: SymbolInfo[];
     imports: ImportInfo[];
-    exports: ExportInfo[];
+    exports: string[];
 }
 
 export interface DependencyGraph {

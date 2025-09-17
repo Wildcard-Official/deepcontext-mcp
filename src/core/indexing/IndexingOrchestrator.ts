@@ -10,44 +10,15 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as crypto from 'crypto'; // Keep for fallback generateNamespace
+import * as crypto from 'crypto';
 import { FileUtils } from '../../utils/FileUtils.js';
 import { LanguageDetector } from '../../utils/LanguageDetector.js';
 import { ContentFilterProvider } from './ContentFilterProvider.js';
 import { TreeSitterSymbolExtractorFull } from './TreeSitterSymbolExtractor.treesitter-based.js';
 import { TreeSitterChunkExtractor, SemanticChunk } from './TreeSitterChunkExtractor.js';
 import { Logger } from '../../utils/Logger.js';
+import { CodeChunk, IndexingRequest } from '../../types/core.js';
 
-export interface IndexingRequest {
-    codebasePath: string;
-    force?: boolean;
-    enableDependencyAnalysis?: boolean;
-    enableContentFiltering?: boolean;
-    maxChunkSize?: number;
-    maxChunkLines?: number;
-    supportedLanguages?: string[];
-}
-
-export interface CodeChunk {
-    id: string;
-    content: string;
-    filePath: string;
-    relativePath: string;
-    startLine: number;
-    endLine: number;
-    language: string;
-    symbols: Array<{
-        name: string;
-        type: 'function' | 'class' | 'interface' | 'type' | 'variable' | 'constant';
-        line: number;
-        scope?: string;
-    }>;
-    imports: Array<{
-        module: string;
-        symbols: string[];
-        line: number;
-    }>;
-}
 
 export interface IndexingResult {
     success: boolean;
@@ -105,7 +76,7 @@ export class IndexingOrchestrator {
         
         this.logger.info(`🚀 Starting indexing: ${request.codebasePath}`);
         this.logger.debug(`📋 Options: ${JSON.stringify({
-            force: request.force,
+            force: request.forceReindex,
             filtering: request.enableContentFiltering,
             dependencies: request.enableDependencyAnalysis
         })}`);
@@ -114,12 +85,10 @@ export class IndexingOrchestrator {
             // Initialize symbol extractor if not already initialized
             await this.symbolExtractor.initialize();
             // Step 1: Discover files
-            this.logger.debug(`🔍 Starting file discovery for: ${request.codebasePath}`);
             const allFiles = await this.fileUtils.discoverFiles(
                 request.codebasePath,
                 request.supportedLanguages || ['typescript', 'javascript', 'python', 'java', 'cpp', 'go', 'rust']
             );
-            this.logger.debug(`📁 Discovered: ${allFiles.length} files`);
 
             if (allFiles.length === 0) {
                 this.logger.warn(`⚠️ No files found in ${request.codebasePath}`);
@@ -130,11 +99,9 @@ export class IndexingOrchestrator {
             }
 
             // Step 2: Apply content filtering
-            this.logger.debug(`🔍 Starting content filtering...`);
             let filesToProcess = allFiles;
             if (request.enableContentFiltering !== false) {
                 filesToProcess = await this.applyContentFiltering(allFiles, request.codebasePath);
-                this.logger.debug(`🔍 After filtering: ${filesToProcess.length} files`);
             }
 
             this.logger.info(`📝 Processing: ${filesToProcess.length} files`);
@@ -165,9 +132,23 @@ export class IndexingOrchestrator {
             }
 
             const indexingTime = Date.now() - startTime;
-            const namespace = this.services?.namespaceManagerService?.generateNamespace(request.codebasePath)
-                || this.generateNamespace(request.codebasePath);
-            
+            if (!this.services?.namespaceManagerService) {
+                throw new Error('NamespaceManagerService is required for indexing operations');
+            }
+            const namespace = this.services.namespaceManagerService.generateNamespace(request.codebasePath);
+
+            // Clear existing index if force reindex is requested
+            if (request.forceReindex && this.services?.turbopufferService) {
+                this.logger.info(`🗑️ Force reindex enabled - clearing existing namespace: ${namespace}`);
+                try {
+                    await this.services.turbopufferService.clearNamespace(namespace);
+                    this.logger.info(`✅ Successfully cleared namespace: ${namespace}`);
+                } catch (error) {
+                    this.logger.warn(`⚠️ Failed to clear namespace ${namespace}:`, error);
+                    // Continue with indexing even if clearing fails
+                }
+            }
+
             // Upload to vector store if services are provided
             if (this.services?.jinaApiService && this.services?.turbopufferService && chunks.length > 0) {
                 this.logger.info(`Uploading ${chunks.length} chunks to vector store...`);
@@ -193,7 +174,7 @@ export class IndexingOrchestrator {
                     namespace,
                     totalFiles: filesToProcess.length,
                     totalChunks: chunks.length,
-                    totalSymbols: chunks.reduce((sum, chunk) => sum + chunk.symbols.length, 0),
+                    totalSymbols: chunks.reduce((sum, chunk) => sum + (chunk.symbols?.length || 0), 0),
                     indexingTime,
                     indexingMethod: 'full',
                     features: {
@@ -213,8 +194,7 @@ export class IndexingOrchestrator {
                 success: false,
                 metadata: {
                     codebasePath: request.codebasePath,
-                    namespace: this.services?.namespaceManagerService?.generateNamespace(request.codebasePath)
-                        || this.generateNamespace(request.codebasePath),
+                    namespace: this.services?.namespaceManagerService?.generateNamespace(request.codebasePath) || 'unknown',
                     totalFiles: 0,
                     totalChunks: 0,
                     totalSymbols: 0,
@@ -241,6 +221,7 @@ export class IndexingOrchestrator {
         const content = await fs.readFile(filePath, 'utf-8');
         const language = this.languageDetector.detectLanguage(filePath, content);
         const relativePath = path.relative(request.codebasePath, filePath);
+
 
         try {
             // Use new TreeSitterChunkExtractor for semantic chunking
@@ -279,8 +260,10 @@ export class IndexingOrchestrator {
                     )
                     .map(symbol => ({
                         name: symbol.name,
-                        type: symbol.type as 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type',
-                        line: symbol.startLine,
+                        type: symbol.type as 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace',
+                        startLine: symbol.startLine,
+                        endLine: symbol.endLine,
+                        line: symbol.startLine, // Keep for backward compatibility
                         scope: symbol.scope
                     }));
 
@@ -294,6 +277,7 @@ export class IndexingOrchestrator {
                         symbols: imp.symbols,
                         line: imp.line
                     }));
+
 
                 return {
                     id: semanticChunk.id,
@@ -329,409 +313,23 @@ export class IndexingOrchestrator {
         }
     }
 
-    /**
-     * Create chunks from documentable nodes (complete logical units)
-     * Each node becomes one chunk with complete boundaries and context
-     */
-    private createDocumentableNodeChunks(
-        filePath: string,
-        relativePath: string,
-        language: string,
-        nodeAnalysis: any,
-        request: IndexingRequest
-    ): CodeChunk[] {
-        const chunks: CodeChunk[] = [];
-        const maxChunkSize = request.maxChunkSize || 8000; // Increased for complete functions
-        const maxChunkLines = request.maxChunkLines || 300;
 
-        for (const node of nodeAnalysis.nodes) {
-            // Check if node needs hierarchical chunking
-            const needsHierarchicalChunking = 
-                node.content.length > maxChunkSize || 
-                (node.endLine - node.startLine) > maxChunkLines;
 
-            if (needsHierarchicalChunking && node.type === 'class') {
-                // Apply hierarchical chunking to large classes
-                const hierarchicalChunks = this.createHierarchicalClassChunks(
-                    node, filePath, relativePath, language
-                );
-                chunks.push(...hierarchicalChunks);
-                this.logger.debug(`Created ${hierarchicalChunks.length} hierarchical chunks for class ${node.name}`);
-            } else {
-                // Create single chunk for smaller nodes
-                const symbols = [{
-                    name: node.name,
-                    type: node.type === 'method' ? 'function' : node.type,
-                    line: node.startLine,
-                    scope: node.scope
-                }];
 
-                const imports = node.imports.map((importPath: string) => ({
-                    module: importPath,
-                    symbols: [],
-                    line: 1
-                }));
 
-                chunks.push({
-                    id: this.generateChunkId(filePath, node.startLine, node.content),
-                    content: node.content,
-                    filePath,
-                    relativePath,
-                    startLine: node.startLine,
-                    endLine: node.endLine,
-                    language,
-                    symbols,
-                    imports
-                });
-            }
-        }
 
-        this.logger.debug(`Created ${chunks.length} documentable node chunks for ${filePath}`);
-        return chunks;
-    }
 
-    /**
-     * Create hierarchical chunks for large classes
-     * Splits large classes into: class overview + individual methods
-     */
-    private createHierarchicalClassChunks(
-        node: any,
-        filePath: string,
-        relativePath: string,
-        language: string
-    ): CodeChunk[] {
-        const chunks: CodeChunk[] = [];
-        const lines = node.content.split('\n');
-        
-        // Create class overview chunk (first ~50 lines or until first method)
-        const overviewEndLine = this.findClassOverviewEnd(lines);
-        const overviewContent = lines.slice(0, overviewEndLine + 1).join('\n');
-        
-        chunks.push({
-            id: this.generateChunkId(filePath, node.startLine, overviewContent),
-            content: overviewContent,
-            filePath,
-            relativePath,
-            startLine: node.startLine,
-            endLine: node.startLine + overviewEndLine,
-            language,
-            symbols: [{
-                name: node.name,
-                type: 'class',
-                line: node.startLine,
-                scope: node.scope
-            }],
-            imports: node.imports.map((importPath: string) => ({
-                module: importPath,
-                symbols: [],
-                line: 1
-            }))
-        });
 
-        // Extract individual methods from the remaining content
-        const methodChunks = this.extractMethodsFromClass(
-            lines.slice(overviewEndLine + 1),
-            node,
-            filePath,
-            relativePath,
-            language,
-            node.startLine + overviewEndLine + 1
-        );
-        
-        chunks.push(...methodChunks);
-        return chunks;
-    }
 
-    /**
-     * Find where class overview should end (after constructor, before first real method)
-     */
-    private findClassOverviewEnd(lines: string[]): number {
-        let constructorEnd = -1;
-        
-        // First, find the end of constructor if it exists
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (line.includes('constructor')) {
-                // Find the end of constructor
-                constructorEnd = this.findMethodEndInLines(lines, i);
-                break;
-            }
-        }
-        
-        // If we found constructor, look for first method after it
-        const searchStart = Math.max(constructorEnd + 1, 0);
-        for (let i = searchStart; i < Math.min(lines.length, 80); i++) {
-            const line = lines[i].trim();
-            // Look for method patterns (but not constructor)
-            if (line.match(/^\s*(public|private|protected)?\s*(async\s+)?\w+\s*\(/)) {
-                if (!line.includes('constructor')) {
-                    return Math.max(i - 1, constructorEnd + 1); // Include line before method
-                }
-            }
-        }
-        
-        // Default: include constructor + some buffer, or first 50 lines
-        return Math.min(constructorEnd + 5, 49, lines.length - 1);
-    }
-
-    /**
-     * Extract individual methods from class content
-     */
-    private extractMethodsFromClass(
-        lines: string[],
-        classNode: any,
-        filePath: string,
-        relativePath: string,
-        language: string,
-        startLineOffset: number
-    ): CodeChunk[] {
-        const methods: CodeChunk[] = [];
-        let i = 0;
-
-        while (i < lines.length) {
-            const line = lines[i].trim();
-            
-            // Look for method declarations
-            const methodMatch = line.match(/^\s*(public|private|protected)?\s*(async\s+)?(\w+)\s*\(/);
-            if (methodMatch) {
-                const methodName = methodMatch[3];
-                const methodStart = i;
-                const methodEnd = this.findMethodEnd(lines, i);
-                
-                if (methodEnd > methodStart) {
-                    // Find preceding comments (JSDoc, etc.)
-                    const commentStart = this.findPrecedingComments(lines, methodStart);
-                    const methodContent = lines.slice(commentStart, methodEnd + 1).join('\n');
-                    
-                    methods.push({
-                        id: this.generateChunkId(filePath, startLineOffset + commentStart, methodContent),
-                        content: methodContent,
-                        filePath,
-                        relativePath,
-                        startLine: startLineOffset + commentStart,
-                        endLine: startLineOffset + methodEnd,
-                        language,
-                        symbols: [{
-                            name: `${classNode.name}.${methodName}`,
-                            type: 'function',
-                            line: startLineOffset + methodStart,
-                            scope: classNode.scope
-                        }],
-                        imports: classNode.imports.map((importPath: string) => ({
-                            module: importPath,
-                            symbols: [],
-                            line: 1
-                        }))
-                    });
-                }
-                
-                i = methodEnd + 1;
-            } else {
-                i++;
-            }
-        }
-        
-        return methods;
-    }
-
-    /**
-     * Find the end of a method using brace matching (helper for hierarchical chunking)
-     */
-    private findMethodEndInLines(lines: string[], startIndex: number): number {
-        let braceCount = 0;
-        let foundOpenBrace = false;
-        
-        for (let i = startIndex; i < lines.length; i++) {
-            const line = lines[i];
-            
-            for (const char of line) {
-                if (char === '{') {
-                    braceCount++;
-                    foundOpenBrace = true;
-                } else if (char === '}') {
-                    braceCount--;
-                    
-                    if (foundOpenBrace && braceCount === 0) {
-                        return i;
-                    }
-                }
-            }
-        }
-        
-        return startIndex; // Fallback if no matching brace found
-    }
-
-    /**
-     * Find the end of a method using brace matching
-     */
-    private findMethodEnd(lines: string[], startIndex: number): number {
-        let braceCount = 0;
-        let foundOpenBrace = false;
-        
-        for (let i = startIndex; i < lines.length; i++) {
-            const line = lines[i];
-            
-            for (const char of line) {
-                if (char === '{') {
-                    braceCount++;
-                    foundOpenBrace = true;
-                } else if (char === '}') {
-                    braceCount--;
-                    
-                    if (foundOpenBrace && braceCount === 0) {
-                        return i;
-                    }
-                }
-            }
-        }
-        
-        return startIndex; // Fallback if no matching brace found
-    }
-
-    /**
-     * Find preceding comments (JSDoc, block comments, etc.)
-     */
-    private findPrecedingComments(lines: string[], startIndex: number): number {
-        let commentStart = startIndex;
-        
-        for (let i = startIndex - 1; i >= 0; i--) {
-            const line = lines[i].trim();
-            
-            // Skip empty lines
-            if (line === '') {
-                continue;
-            }
-            
-            // Check for various comment patterns
-            if (line.startsWith('//') ||           // Single line comments
-                line.startsWith('/*') ||           // Block comment start
-                line.includes('*/') ||             // Block comment end
-                line.startsWith('*') ||            // JSDoc continuation
-                line.startsWith('#') ||            // Python comments
-                line.startsWith('"""') ||          // Python docstrings
-                line.startsWith("'''")) {          // Python docstrings
-                commentStart = i;
-                continue;
-            }
-            
-            // Stop at non-comment content
-            break;
-        }
-        
-        return commentStart;
-    }
-
-    /**
-     * Create chunks based on symbol boundaries (fallback)
-     */
-    private createSymbolBasedChunks(
-        content: string,
-        filePath: string,
-        relativePath: string,
-        language: string,
-        symbolAnalysis: any,
-        request: IndexingRequest
-    ): CodeChunk[] {
-        const lines = content.split('\n');
-        const maxChunkSize = request.maxChunkSize || 2000;
-        const maxChunkLines = request.maxChunkLines || 100;
-        const chunks: CodeChunk[] = [];
-
-        // Group symbols by logical boundaries
-        const symbolGroups = this.groupSymbolsByBoundaries(symbolAnalysis.symbols, lines);
-
-        for (const group of symbolGroups) {
-            const chunkContent = lines.slice(group.startLine - 1, group.endLine).join('\n');
-            
-            // Skip if chunk is too large (probably generated code)
-            if (chunkContent.length > maxChunkSize * 2 || group.endLine - group.startLine > maxChunkLines * 2) {
-                continue;
-            }
-
-            chunks.push({
-                id: this.generateChunkId(filePath, group.startLine, chunkContent),
-                content: chunkContent,
-                filePath,
-                relativePath,
-                startLine: group.startLine,
-                endLine: group.endLine,
-                language,
-                symbols: group.symbols,
-                imports: symbolAnalysis.imports.filter((imp: any) => 
-                    imp.line >= group.startLine && imp.line <= group.endLine
-                )
-            });
-        }
-
-        return chunks;
-    }
-
-    /**
-     * Group symbols into logical chunks
-     */
-    private groupSymbolsByBoundaries(symbols: any[], lines: string[]): Array<{
-        startLine: number;
-        endLine: number;
-        symbols: any[];
-    }> {
-        if (symbols.length === 0) {
-            // No symbols, create simple line-based chunks
-            const groups = [];
-            let currentStart = 1;
-            
-            while (currentStart <= lines.length) {
-                const endLine = Math.min(currentStart + 50, lines.length);
-                groups.push({
-                    startLine: currentStart,
-                    endLine,
-                    symbols: []
-                });
-                currentStart = endLine + 1;
-            }
-            
-            return groups;
-        }
-
-        // Group symbols by proximity
-        const groups = [];
-        let currentGroup = {
-            startLine: symbols[0].startLine || symbols[0].line,
-            endLine: symbols[0].endLine || symbols[0].line,
-            symbols: [symbols[0]]
-        };
-
-        for (let i = 1; i < symbols.length; i++) {
-            const symbol = symbols[i];
-            const symbolStart = symbol.startLine || symbol.line;
-            const symbolEnd = symbol.endLine || symbol.line;
-
-            // If symbol is within reasonable distance, add to current group
-            if (symbolStart - currentGroup.endLine <= 10) {
-                currentGroup.endLine = Math.max(currentGroup.endLine, symbolEnd);
-                currentGroup.symbols.push(symbol);
-            } else {
-                // Start new group
-                groups.push(currentGroup);
-                currentGroup = {
-                    startLine: symbolStart,
-                    endLine: symbolEnd,
-                    symbols: [symbol]
-                };
-            }
-        }
-
-        groups.push(currentGroup);
-        return groups;
-    }
 
     private async applyContentFiltering(files: string[], codebasePath: string): Promise<string[]> {
         const filtered: string[] = [];
-        
+
         for (const file of files) {
             try {
                 const content = await fs.readFile(file, 'utf-8');
                 const relativePath = path.relative(codebasePath, file);
-                
+
                 const shouldInclude = this.contentFilter.shouldInclude(relativePath, content);
                 if (shouldInclude.include) {
                     filtered.push(file);
@@ -748,16 +346,6 @@ export class IndexingOrchestrator {
 
 
 
-    /**
-     * Fallback namespace generation (deprecated - use NamespaceManagerService)
-     * @deprecated Use NamespaceManagerService.generateNamespace() instead
-     */
-    private generateNamespace(codebasePath: string): string {
-        this.logger.warn('Using deprecated fallback generateNamespace - should use NamespaceManagerService');
-        const normalized = path.resolve(codebasePath);
-        const hash = crypto.createHash('md5').update(normalized).digest('hex');
-        return `mcp_${hash.substring(0, 8)}`;
-    }
 
     /**
      * Upload chunks to vector store with embedding generation
@@ -788,9 +376,10 @@ export class IndexingOrchestrator {
                 startLine: chunk.startLine,
                 endLine: chunk.endLine,
                 language: chunk.language,
-                symbols: chunk.symbols.map(s => typeof s === 'string' ? s : s.name).join(',')
+                symbols: (chunk.symbols || []).map(s => typeof s === 'string' ? s : s.name).join(',')
             }));
             
+
             // Upload to Turbopuffer
             await this.services.turbopufferService.upsert(namespace, upsertData);
         }
@@ -1023,56 +612,4 @@ export class IndexingOrchestrator {
     /**
      * Clear index for codebase(s)
      */
-    async clearIndex(
-        indexedCodebases: Map<string, any>,
-        codebasePath?: string,
-        saveCallback?: () => Promise<void>
-    ): Promise<{
-        success: boolean;
-        message: string;
-        clearedNamespaces: string[];
-    }> {
-        try {
-            const namespacesToClear: string[] = [];
-            
-            if (codebasePath) {
-                const indexed = indexedCodebases.get(codebasePath);
-                if (indexed) {
-                    namespacesToClear.push(indexed.namespace);
-                    indexedCodebases.delete(codebasePath);
-                }
-            } else {
-                for (const indexed of indexedCodebases.values()) {
-                    namespacesToClear.push(indexed.namespace);
-                }
-                indexedCodebases.clear();
-            }
-
-            // Clear from vector store if service available
-            if (this.services?.turbopufferService) {
-                for (const namespace of namespacesToClear) {
-                    await this.services.turbopufferService.clearNamespace(namespace);
-                }
-            }
-
-            // Save state if callback provided
-            if (saveCallback) {
-                await saveCallback();
-            }
-            
-            return {
-                success: true,
-                message: `Cleared ${namespacesToClear.length} namespace(s)`,
-                clearedNamespaces: namespacesToClear
-            };
-            
-        } catch (error) {
-            this.logger.error('Clear index failed:', error);
-            return {
-                success: false,
-                message: `Clear failed: ${error instanceof Error ? error.message : String(error)}`,
-                clearedNamespaces: []
-            };
-        }
-    }
 }
