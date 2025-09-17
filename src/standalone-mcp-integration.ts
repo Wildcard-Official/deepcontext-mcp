@@ -407,21 +407,32 @@ export class StandaloneCodexMcp {
             // Initialize symbol extractor if needed
             await this.symbolExtractor.initialize();
 
-            // Detect language
-            const language = this.languageDetector.detectLanguage(filePath, chunkContent);
+            // Read the full file content to get imports/exports (they're usually at file level)
+            const fs = await import('fs/promises');
+            const fullFileContent = await fs.readFile(filePath, 'utf-8');
 
-            // Use TreeSitterSymbolExtractorFull for accurate import/export extraction
+            // Detect language from full file
+            const language = this.languageDetector.detectLanguage(filePath, fullFileContent);
+
+            // Use TreeSitterSymbolExtractorFull for accurate import/export extraction on full file
             const symbolResult = await this.symbolExtractor.extractSymbols(
-                chunkContent,
+                fullFileContent,
                 language.language,
                 filePath
             );
 
-            return {
-                imports: symbolResult.imports.map(imp => imp.source).slice(0, 5),
-                exports: symbolResult.exports,
+            const result = {
+                imports: symbolResult.imports.map(imp => imp.module).filter(Boolean).slice(0, 5),
+                exports: symbolResult.exports.slice(0, 5),
                 relatedFiles: symbolResult.imports.map(imp => imp.module).filter(Boolean).slice(0, 5)
             };
+
+            this.logger.debug(`🔗 Extracted connections for ${filePath}:`);
+            this.logger.debug(`   Full file content length: ${fullFileContent.length} chars`);
+            this.logger.debug(`   Raw imports: ${JSON.stringify(symbolResult.imports)}`);
+            this.logger.debug(`   Raw exports: ${JSON.stringify(symbolResult.exports)}`);
+            this.logger.debug(`   Final result: ${result.imports.length} imports, ${result.exports.length} exports`);
+            return result;
 
         } catch (error) {
             this.logger.debug('Failed to extract connection context:', error);

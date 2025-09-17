@@ -239,6 +239,7 @@ export class IndexingOrchestrator {
                 filePath
             );
 
+            this.logger.debug(`🔍 Symbol extraction for ${filePath}: ${fileSymbolResult.symbols.length} symbols, ${fileSymbolResult.imports.length} imports`);
 
             // Convert SemanticChunk[] to CodeChunk[] format with enhanced symbols/imports
             const chunks: CodeChunk[] = chunkingResult.chunks.map(semanticChunk => {
