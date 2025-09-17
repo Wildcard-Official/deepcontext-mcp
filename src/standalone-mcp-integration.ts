@@ -655,21 +655,11 @@ class StandaloneMCPServer {
                                     }]
                                 };
                             } else {
-                                // Provide error information without massive chunks data
-                                const errorInfo = {
-                                    success: indexResult.success,
-                                    namespace: indexResult.namespace,
-                                    filesProcessed: indexResult.filesProcessed,
-                                    chunksCreated: indexResult.chunksCreated,
-                                    processingTimeMs: indexResult.processingTimeMs,
-                                    message: indexResult.message,
-                                    errorCount: indexResult.errorCount,
-                                    failedFiles: indexResult.failedFiles?.slice(0, 5) // Limit to first 5 failed files
-                                };
+                                // Provide detailed error information
                                 return {
                                     content: [{
                                         type: 'text',
-                                        text: `❌ Indexing failed: ${indexResult.message}\n\nSummary:\n${JSON.stringify(errorInfo, null, 2)}`
+                                        text: `❌ Indexing failed: ${indexResult.message}\n\nDetailed Results:\n${JSON.stringify(indexResult, null, 2)}`
                                     }]
                                 };
                             }
