@@ -323,24 +323,38 @@ export class IndexingOrchestrator {
 
 
     private async applyContentFiltering(files: string[], codebasePath: string): Promise<string[]> {
+        this.logger.info(`🔍 Content filtering ${files.length} files...`);
+
+        const batchSize = 50;
         const filtered: string[] = [];
 
-        for (const file of files) {
-            try {
-                const content = await fs.readFile(file, 'utf-8');
-                const relativePath = path.relative(codebasePath, file);
+        for (let i = 0; i < files.length; i += batchSize) {
+            const batch = files.slice(i, i + batchSize);
 
-                const shouldInclude = this.contentFilter.shouldInclude(relativePath, content);
-                if (shouldInclude.include) {
-                    filtered.push(file);
-                } else {
-                    this.logger.debug(`🚫 Filtered: ${relativePath} (${shouldInclude.reason})`);
+            const results = await Promise.allSettled(
+                batch.map(async (file) => {
+                    try {
+                        const content = await fs.readFile(file, 'utf-8');
+                        const relativePath = path.relative(codebasePath, file);
+                        const shouldInclude = this.contentFilter.shouldInclude(relativePath, content);
+                        return { file, shouldInclude, relativePath };
+                    } catch (error) {
+                        console.warn(`[INDEXING] ⚠️ Error filtering ${file}: ${error}`);
+                        return null;
+                    }
+                })
+            );
+
+            results.forEach((result) => {
+                if (result.status === 'fulfilled' && result.value?.shouldInclude.include) {
+                    filtered.push(result.value.file);
+                } else if (result.status === 'fulfilled' && result.value) {
+                    this.logger.debug(`🚫 Filtered: ${result.value.relativePath} (${result.value.shouldInclude.reason})`);
                 }
-            } catch (error) {
-                console.warn(`[INDEXING] ⚠️ Error filtering ${file}: ${error}`);
-            }
+            });
         }
-        
+
+        this.logger.info(`✅ Content filtering complete: ${filtered.length}/${files.length} files included`);
         return filtered;
     }
 

@@ -1,19 +1,21 @@
 /**
  * ContentFilterProvider - Intelligent content filtering for code indexing
- * 
+ *
  * Filters out noise to improve search quality:
  * - Test files with mock data
  * - Generated/compiled code
- * - Configuration files 
+ * - Configuration files
  * - Low-quality content (minified, large data files)
  * - Binary and media files
  */
+
 
 export interface FilterResult {
     include: boolean;
     reason: string;
     confidence: number;
 }
+
 
 export class ContentFilterProvider {
     private readonly TEST_FILE_PATTERNS = [
@@ -232,6 +234,7 @@ export class ContentFilterProvider {
         };
     }
 
+
     /**
      * Check if file is a test file
      */
@@ -289,6 +292,7 @@ export class ContentFilterProvider {
             confidence: 1.0
         };
     }
+
 
     /**
      * Check content quality
