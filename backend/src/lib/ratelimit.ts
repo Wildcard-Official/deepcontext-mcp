@@ -2,17 +2,17 @@ import prisma from './prisma.js';
 import { EventType } from '@prisma/client';
 
 export const DEFAULT_RATE_LIMITS: Record<EventType, { limit: number; windowSeconds: number }> = {
-  [EventType.JINA_EMBEDDINGS]: { limit: 5000, windowSeconds: 86400 },
-  [EventType.JINA_RERANK]: { limit: 5000, windowSeconds: 86400 },
+  [EventType.JINA_EMBEDDINGS]: { limit: 10000, windowSeconds: 86400 },
+  [EventType.JINA_RERANK]: { limit: 10000, windowSeconds: 86400 },
   [EventType.TURBOPUFFER_NAMESPACE_QUERY]: { limit: 200, windowSeconds: 86400 },
-  [EventType.TURBOPUFFER_NAMESPACE_UPSERT]: { limit: 5, windowSeconds: 86400 },
-  [EventType.TURBOPUFFER_NAMESPACE_CLEAR]: { limit: 20, windowSeconds: 86400 },
+  [EventType.TURBOPUFFER_NAMESPACE_UPSERT]: { limit: 10000, windowSeconds: 86400 },
+  [EventType.TURBOPUFFER_NAMESPACE_CLEAR]: { limit: 10000, windowSeconds: 86400 },
   [EventType.TURBOPUFFER_NAMESPACE_EXISTS]: { limit: 10000, windowSeconds: 86400 },
   [EventType.TURBOPUFFER_HYBRID]: { limit: 200, windowSeconds: 86400 },
-  [EventType.TURBOPUFFER_CHUNKS_IDS]: { limit: 200, windowSeconds: 86400 },
-  [EventType.TURBOPUFFER_CHUNKS_DELETE]: { limit: 5, windowSeconds: 86400 },
+  [EventType.TURBOPUFFER_CHUNKS_IDS]: { limit: 10000, windowSeconds: 86400 },
+  [EventType.TURBOPUFFER_CHUNKS_DELETE]: { limit: 10000, windowSeconds: 86400 },
   [EventType.TURBOPUFFER_QUERY]: { limit: 200, windowSeconds: 86400 },
-  [EventType.TURBOPUFFER_UPSERT]: { limit: 5, windowSeconds: 86400 }
+  [EventType.TURBOPUFFER_UPSERT]: { limit: 10000, windowSeconds: 86400 }
 };
 
 export type RateLimitCheck = {
