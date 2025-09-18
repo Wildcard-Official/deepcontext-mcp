@@ -43,8 +43,11 @@ export class TurbopufferService implements TurbopufferStore {
     ) {
         this.logger = new Logger(loggerName);
 
-        if (!apiKey) {
-            throw new Error('Turbopuffer API key is required');
+        // Allow empty API key if Wildcard backend is available
+        const config = configurationService.getConfig();
+        const hasWildcardKey = !!(config.wildcardApiKey && config.wildcardApiKey !== 'test');
+        if (!apiKey && !hasWildcardKey) {
+            throw new Error('Turbopuffer API key is required when not using Wildcard backend');
         }
     }
 

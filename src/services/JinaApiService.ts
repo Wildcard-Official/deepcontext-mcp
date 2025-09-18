@@ -45,8 +45,11 @@ export class JinaApiService {
     ) {
         this.logger = new Logger(loggerName);
 
-        if (!apiKey) {
-            throw new Error('Jina API key is required');
+        // Allow empty API key if Wildcard backend is available
+        const config = configurationService.getConfig();
+        const hasWildcardKey = !!(config.wildcardApiKey && config.wildcardApiKey !== 'test');
+        if (!apiKey && !hasWildcardKey) {
+            throw new Error('Jina API key is required when not using Wildcard backend');
         }
     }
 

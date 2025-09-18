@@ -86,9 +86,9 @@ export class ConfigurationService {
                 : 'info';
 
         const baseConfig: McpConfig = {
-            wildcardApiKey: process.env.WILDCARD_API_KEY || 'test',
-            jinaApiKey: process.env.JINA_API_KEY || 'test',
-            turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
+            wildcardApiKey: process.env.WILDCARD_API_KEY || '',
+            jinaApiKey: process.env.JINA_API_KEY || (process.env.WILDCARD_API_KEY ? '' : 'test'),
+            turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || (process.env.WILDCARD_API_KEY ? '' : 'test'),
             logLevel: validLogLevel,
             search: {
                 defaultVectorWeight: 0.6,  // Primary weight for vector similarity
@@ -147,21 +147,24 @@ export class ConfigurationService {
     validateConfiguration(allowTestKeys: boolean = true): ConfigValidationResult {
         const errors: string[] = [];
         const warnings: string[] = [];
+        const hasWildcardKey = !!(this.config.wildcardApiKey && this.config.wildcardApiKey !== 'test');
 
-        // Check required keys
-        if (!this.config.wildcardApiKey) {
-            errors.push('Wildcard API key is required. Get it from https://wild-card.ai/deepcontext');
+        // Check required keys - either Wildcard OR individual APIs
+        if (!hasWildcardKey) {
+            if (!this.config.jinaApiKey || this.config.jinaApiKey === 'test') {
+                if (!allowTestKeys) {
+                    errors.push('Jina API key is required');
+                }
+            }
+            if (!this.config.turbopufferApiKey || this.config.turbopufferApiKey === 'test') {
+                if (!allowTestKeys) {
+                    errors.push('Turbopuffer API key is required');
+                }
+            }
+            if (!allowTestKeys && errors.length > 0) {
+                errors.push('Or use Wildcard API key for all-in-one solution. Get it from https://wild-card.ai/deepcontext');
+            }
         }
-
-        if (!this.config.wildcardApiKey && !this.config.jinaApiKey) {
-            errors.push('Jina API key is required');
-        }
-
-        if (!this.config.wildcardApiKey && !this.config.turbopufferApiKey) {
-            errors.push('Turbopuffer API key is required');
-        }
-
-        // OpenAI API key no longer required
 
         // Validate log level
         const validLogLevels = ['debug', 'info', 'warn', 'error'];
@@ -170,11 +173,11 @@ export class ConfigurationService {
             this.config.logLevel = 'info';
         }
 
-        // Determine capabilities
+        // Determine capabilities - Wildcard provides all, or check individual APIs
         const capabilities: ServiceCapabilities = {
-            reranking: !!(this.config.jinaApiKey && this.config.jinaApiKey !== 'test'),
-            vectorSearch: !!(this.config.turbopufferApiKey && this.config.turbopufferApiKey !== 'test'),
-            embedding: !!(this.config.jinaApiKey && this.config.jinaApiKey !== 'test')
+            reranking: hasWildcardKey || !!(this.config.jinaApiKey && this.config.jinaApiKey !== 'test'),
+            vectorSearch: hasWildcardKey || !!(this.config.turbopufferApiKey && this.config.turbopufferApiKey !== 'test'),
+            embedding: hasWildcardKey || !!(this.config.jinaApiKey && this.config.jinaApiKey !== 'test')
         };
 
         const result: ConfigValidationResult = {
@@ -255,16 +258,29 @@ export class ConfigurationService {
      */
     logConfigurationStatus(): void {
         const capabilities = this.getCapabilities();
-        
+        const hasWildcardKey = !!(this.config.wildcardApiKey && this.config.wildcardApiKey !== 'test');
+
         console.error('\n🔧 Intelligent Context MCP Configuration:');
         console.error('=' .repeat(50));
         console.error(`📊 Log Level: ${this.config.logLevel.toUpperCase()}`);
-        console.error(`🔑 Jina API: ${this.config.jinaApiKey !== 'test' ? '✅ Configured' : '⚠️ Test Key'}`);
-        console.error(`🗄️ Turbopuffer: ${this.config.turbopufferApiKey !== 'test' ? '✅ Configured' : '⚠️ Test Key'}`);
+
+        if (hasWildcardKey) {
+            console.error(`🌟 Wildcard Backend: ✅ Enabled (all-in-one solution)`);
+        } else {
+            console.error(`🔑 Jina API: ${this.config.jinaApiKey !== 'test' && this.config.jinaApiKey ? '✅ Configured' : '⚠️ Test Key'}`);
+            console.error(`🗄️ Turbopuffer: ${this.config.turbopufferApiKey !== 'test' && this.config.turbopufferApiKey ? '✅ Configured' : '⚠️ Test Key'}`);
+        }
+
         console.error('\n🚀 Available Capabilities:');
-        console.error(`🔄 Result Reranking: ${capabilities.reranking ? '✅ Enabled' : '❌ Disabled'}`);
-        console.error(`🔍 Vector Search: ${capabilities.vectorSearch ? '✅ Enabled' : '❌ Disabled'}`);
-        console.error(`📐 Embeddings: ${capabilities.embedding ? '✅ Enabled' : '❌ Disabled'}`);
+        if (hasWildcardKey) {
+            console.error(`🔄 Result Reranking: ✅ Enabled (via Wildcard)`);
+            console.error(`🔍 Vector Search: ✅ Enabled (via Wildcard)`);
+            console.error(`📐 Embeddings: ✅ Enabled (via Wildcard)`);
+        } else {
+            console.error(`🔄 Result Reranking: ${capabilities.reranking ? '✅ Enabled' : '❌ Disabled'}`);
+            console.error(`🔍 Vector Search: ${capabilities.vectorSearch ? '✅ Enabled' : '❌ Disabled'}`);
+            console.error(`📐 Embeddings: ${capabilities.embedding ? '✅ Enabled' : '❌ Disabled'}`);
+        }
 
         // Show warnings if any
         if (this.validationResult?.warnings.length) {
@@ -274,8 +290,8 @@ export class ConfigurationService {
             });
         }
 
-        // Show limitations with test keys
-        if (!capabilities.reranking || !capabilities.vectorSearch) {
+        // Show limitations only if not using Wildcard
+        if (!hasWildcardKey && (!capabilities.reranking || !capabilities.vectorSearch)) {
             console.error('\n💡 To enable full functionality:');
             if (!capabilities.reranking) {
                 console.error('   • Set JINA_API_KEY environment variable');
@@ -283,6 +299,8 @@ export class ConfigurationService {
             if (!capabilities.vectorSearch) {
                 console.error('   • Set TURBOPUFFER_API_KEY environment variable');
             }
+            console.error('\n🌟 Or use the Wildcard all-in-one solution:');
+            console.error('   • Set WILDCARD_API_KEY environment variable');
         }
         console.error('=' .repeat(50));
     }
