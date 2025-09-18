@@ -2,6 +2,7 @@ import { FastifyPluginAsync } from 'fastify';
 import prisma from '../lib/prisma.js';
 import { EventType } from '@prisma/client';
 import { ensureNamespaceForUpsert, findNamespaceOr404, forwardToTurbopuffer } from './helpers/vectordb.js';
+import { checkRateLimit, recordRateLimitUsage } from '../lib/ratelimit.js';
 
 const route: FastifyPluginAsync = async (fastify) => {
   // Upsert => POST /turbopuffer/namespaces/:name
@@ -22,6 +23,10 @@ const route: FastifyPluginAsync = async (fastify) => {
     const { name } = req.params as { name: string };
     const body = req.body as any;
     const apiKeyId = req.apiKey!.id;
+    const rl = await checkRateLimit(apiKeyId, body.upsert_rows ? EventType.TURBOPUFFER_NAMESPACE_UPSERT : EventType.TURBOPUFFER_CHUNKS_DELETE);
+    if (!rl.allowed) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+    }
 
     // Ensure namespace belongs to this API key; create if missing on upsert
     let nsRecord = await prisma.namespace.findFirst({ where: { name, apiKeyId } });
@@ -39,6 +44,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: body.upsert_rows ? EventType.TURBOPUFFER_NAMESPACE_UPSERT : EventType.TURBOPUFFER_CHUNKS_DELETE,
       reply
     });
+    await recordRateLimitUsage(apiKeyId, body.upsert_rows ? EventType.TURBOPUFFER_NAMESPACE_UPSERT : EventType.TURBOPUFFER_CHUNKS_DELETE);
   });
 
   // Query => POST /turbopuffer/namespaces/:name/query
@@ -48,6 +54,10 @@ const route: FastifyPluginAsync = async (fastify) => {
     const { name } = req.params as { name: string };
     const body = req.body as any;
     const apiKeyId = req.apiKey!.id;
+    const rl = await checkRateLimit(apiKeyId, EventType.TURBOPUFFER_NAMESPACE_QUERY);
+    if (!rl.allowed) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+    }
     const nsRecord = await findNamespaceOr404(name, apiKeyId, reply);
     if (!nsRecord) return;
 
@@ -61,12 +71,17 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: EventType.TURBOPUFFER_NAMESPACE_QUERY,
       reply
     });
+    await recordRateLimitUsage(apiKeyId, EventType.TURBOPUFFER_NAMESPACE_QUERY);
   });
 
   // Exists => GET /turbopuffer/namespaces/:name
   fastify.get('/turbopuffer/namespaces/:name', async (req, reply) => {
     const { name } = req.params as { name: string };
     const apiKeyId = req.apiKey!.id;
+    const rl = await checkRateLimit(apiKeyId, EventType.TURBOPUFFER_NAMESPACE_EXISTS);
+    if (!rl.allowed) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+    }
     const nsRecord = await findNamespaceOr404(name, apiKeyId, reply);
     if (!nsRecord) return;
 
@@ -78,12 +93,17 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: EventType.TURBOPUFFER_NAMESPACE_EXISTS,
       reply
     });
+    await recordRateLimitUsage(apiKeyId, EventType.TURBOPUFFER_NAMESPACE_EXISTS);
   });
 
   // Clear => DELETE /turbopuffer/namespaces/:name
   fastify.delete('/turbopuffer/namespaces/:name', async (req, reply) => {
     const { name } = req.params as { name: string };
     const apiKeyId = req.apiKey!.id;
+    const rl = await checkRateLimit(apiKeyId, EventType.TURBOPUFFER_NAMESPACE_CLEAR);
+    if (!rl.allowed) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+    }
     const nsRecord = await findNamespaceOr404(name, apiKeyId, reply);
     if (!nsRecord) return;
 
@@ -95,6 +115,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: EventType.TURBOPUFFER_NAMESPACE_CLEAR,
       reply
     });
+    await recordRateLimitUsage(apiKeyId, EventType.TURBOPUFFER_NAMESPACE_CLEAR);
 
     // After forwarding the delete to the provider, remove the local Namespace record
     try {
@@ -122,6 +143,10 @@ const route: FastifyPluginAsync = async (fastify) => {
   }, async (req, reply) => {
     const body = req.body as any;
     const apiKeyId = req.apiKey!.id;
+    const rl = await checkRateLimit(apiKeyId, EventType.TURBOPUFFER_HYBRID);
+    if (!rl.allowed) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+    }
 
     const nsRecord = await findNamespaceOr404(body.namespace, apiKeyId, reply);
     if (!nsRecord) return;
@@ -143,6 +168,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: EventType.TURBOPUFFER_HYBRID,
       reply
     });
+    await recordRateLimitUsage(apiKeyId, EventType.TURBOPUFFER_HYBRID);
   });
 
   // Get chunk IDs for file
@@ -151,6 +177,10 @@ const route: FastifyPluginAsync = async (fastify) => {
   }, async (req, reply) => {
     const body = req.body as any;
     const apiKeyId = req.apiKey!.id;
+    const rl = await checkRateLimit(apiKeyId, EventType.TURBOPUFFER_CHUNKS_IDS);
+    if (!rl.allowed) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+    }
     const nsRecord = await findNamespaceOr404(body.namespace, apiKeyId, reply);
     if (!nsRecord) return;
 
@@ -165,6 +195,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: EventType.TURBOPUFFER_CHUNKS_IDS,
       reply
     });
+    await recordRateLimitUsage(apiKeyId, EventType.TURBOPUFFER_CHUNKS_IDS);
   });
 
   // Delete chunks by IDs
@@ -173,6 +204,10 @@ const route: FastifyPluginAsync = async (fastify) => {
   }, async (req, reply) => {
     const body = req.body as any;
     const apiKeyId = req.apiKey!.id;
+    const rl = await checkRateLimit(apiKeyId, EventType.TURBOPUFFER_CHUNKS_DELETE);
+    if (!rl.allowed) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+    }
     const nsRecord = await findNamespaceOr404(body.namespace, apiKeyId, reply);
     if (!nsRecord) return;
 
@@ -186,6 +221,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       eventType: EventType.TURBOPUFFER_CHUNKS_DELETE,
       reply
     });
+    await recordRateLimitUsage(apiKeyId, EventType.TURBOPUFFER_CHUNKS_DELETE);
   });
 };
 

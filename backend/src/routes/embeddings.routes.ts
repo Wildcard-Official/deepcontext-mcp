@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from 'fastify';
 import { EventType } from '@prisma/client';
+import { checkRateLimit, recordRateLimitUsage } from '../lib/ratelimit.js';
 import { forwardToJina, withEmbeddingDefaults, withRerankDefaults } from './helpers/embeddings.js';
 
 const route: FastifyPluginAsync = async (fastify) => {
@@ -22,8 +23,13 @@ const route: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const body = req.body as any;
       const apiKeyId = req.apiKey!.id;
+      const rl = await checkRateLimit(apiKeyId, EventType.JINA_EMBEDDINGS);
+      if (!rl.allowed) {
+        return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+      }
       const jinaBody = withEmbeddingDefaults(body);
       await forwardToJina({ path: '/embeddings', method: 'POST', body: jinaBody, apiKeyId, eventType: EventType.JINA_EMBEDDINGS, reply });
+      await recordRateLimitUsage(apiKeyId, EventType.JINA_EMBEDDINGS);
     }
   );
 
@@ -48,8 +54,13 @@ const route: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       const body = req.body as any;
       const apiKeyId = req.apiKey!.id;
+      const rl = await checkRateLimit(apiKeyId, EventType.JINA_RERANK);
+      if (!rl.allowed) {
+        return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: rl.retryAfterSeconds });
+      }
       const jinaBody = withRerankDefaults(body);
       await forwardToJina({ path: '/rerank', method: 'POST', body: jinaBody, apiKeyId, eventType: EventType.JINA_RERANK, reply });
+      await recordRateLimitUsage(apiKeyId, EventType.JINA_RERANK);
     }
   );
 };

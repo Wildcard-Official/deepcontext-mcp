@@ -7,7 +7,7 @@ import vectordbRoutes from './routes/vectordb.routes.js';
 import embeddingRoutes from './routes/embeddings.routes.js';
 import { registerRequestLogging } from './lib/requestLogger.js';
 
-const server = Fastify({ logger: true });
+const server = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
 
 await server.register(env, {
   dotenv: true,

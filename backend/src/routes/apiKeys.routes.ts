@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import crypto from 'crypto';
 import prisma from '../lib/prisma.js';
+import { DEFAULT_RATE_LIMITS } from '../lib/ratelimit.js';
 import { requireInternalSecret } from '../plugins/auth.js';
 
 const route: FastifyPluginAsync = async (fastify) => {
@@ -35,6 +36,20 @@ const route: FastifyPluginAsync = async (fastify) => {
         .digest('hex');
 
       const createdKey = await prisma.apiKey.create({ data: { hash } });
+
+      // Initialize default rate limits for this API key
+      const now = Date.now();
+      const defaults = Object.entries(DEFAULT_RATE_LIMITS).map(([eventType, cfg]) => ({
+        apiKeyId: createdKey.id,
+        eventType: eventType as any,
+        limit: cfg.limit,
+        windowSeconds: cfg.windowSeconds,
+        used: 0,
+        windowResetAt: new Date(now + cfg.windowSeconds * 1000)
+      }));
+      if (defaults.length > 0) {
+        await prisma.rateLimit.createMany({ data: defaults, skipDuplicates: true });
+      }
 
       if (email) {
         try {
