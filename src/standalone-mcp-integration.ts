@@ -560,15 +560,30 @@ class StandaloneMCPServer {
                     name: 'search_codebase',
                     description: `Finds relevant code in an indexed codebase using natural language or keyword queries.
 
-**When to use**:
-- Find specific functions, classes, or code patterns
-- Get context before making changes to understand dependencies
-- Explore how existing systems work
-- Locate examples of API usage or patterns
+When to use:
+  - Find specific functions, classes, or code patterns
+  - Get context before making changes to understand dependencies
+  - Explore how existing systems work
+  - Locate examples of API usage or patterns
 
-**Returns**: Code chunks with file paths, line numbers, and relevance scores.
+  Search Strategy:
+  - Use specific technical terms: "authentication middleware", "database connection", "error handler"
+  - Focus on implementation: "user login function" rather than "user management system"
+  - Include file types when relevant: "SQL migration", "React component", "API endpoint"
 
-**Prerequisite**: Codebase must be indexed first with index_codebase.`,
+  Discovery Workflow:
+  1. Search discovers relevant files and entry points, use imports and exports to find related files
+  2. Use Read tool to explore discovered files in detail for complete implementation
+  3. Search provides discovery, not complete solutions
+
+  Result Interpretation:
+  - Results ranked by semantic relevance, not code importance
+  - Implementation code often appears in results 2-5, not just #1
+  - Look for actual code files (.ts, .js, .sql) over documentation (.md, .txt)
+
+  Returns: Code chunks with file paths, line numbers, relevance scores, symbol information, imports, and exports.
+
+  Prerequisite: Codebase must be indexed first with index_codebase.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
