@@ -114,7 +114,7 @@ export class ConfigurationService {
 
         // Check required keys
         if (!this.config.wildcardApiKey) {
-            errors.push('Wildcard API key is required. Get it from https://wild-card.ai/code-context-mcp');
+            errors.push('Wildcard API key is required. Get it from https://wild-card.ai/deepcodex-mcp');
         }
 
         if (!this.config.wildcardApiKey && !this.config.jinaApiKey) {
