@@ -22,31 +22,43 @@ enum EventType {
 }
 
 model ApiKey {
-  id        Int      @id @default(autoincrement())
-  hash      String   @unique
-  createdAt DateTime @default(now())
+  id         Int            @id @default(autoincrement())
+  hash       String         @unique
+  createdAt  DateTime       @default(now())
   namespaces Namespace[]
-  events    Event[]
+  events     Event[]
+  emails     ApiKeyEmail[]
 }
 
 model Namespace {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
   rootPath  String?
-  apiKey    ApiKey   @relation(fields: [apiKeyId], references: [id])
+  apiKey    ApiKey    @relation(fields: [apiKeyId], references: [id])
   apiKeyId  Int
-  events    Event[] 
+  events    Event[]
 }
 
 model Event {
-  id         Int       @id @default(autoincrement())
-  type       EventType
-  namespace  Namespace? @relation(fields:[namespaceId], references:[id])
+  id          Int        @id @default(autoincrement())
+  type        EventType
+  namespace   Namespace? @relation(fields:[namespaceId], references:[id])
   namespaceId Int?
-  metadata   Json?
-  durationMs Int?
-  statusCode Int?
+  metadata    Json?
+  durationMs  Int?
+  statusCode  Int?
+  createdAt   DateTime   @default(now())
+  apiKey      ApiKey     @relation(fields: [apiKeyId], references: [id])
+  apiKeyId    Int
+}
+
+model ApiKeyEmail {
+  id        Int      @id @default(autoincrement())
+  email     String
+  apiKey    ApiKey   @relation(fields: [apiKeyId], references: [id])
+  apiKeyId  Int
   createdAt DateTime @default(now())
-  apiKey     ApiKey    @relation(fields: [apiKeyId], references: [id])
-  apiKeyId   Int
+
+  @@unique([email, apiKeyId])
+  @@index([email])
 }
