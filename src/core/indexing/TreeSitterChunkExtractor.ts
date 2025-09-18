@@ -13,6 +13,7 @@
 
 import { Logger } from '../../utils/Logger.js';
 import { SymbolInfo } from '../../types/core.js';
+import { ConfigurationService } from '../../services/ConfigurationService.js';
 import * as crypto from 'crypto';
 
 // Import Tree-sitter modules
@@ -80,11 +81,10 @@ export class TreeSitterChunkExtractor {
     private logger: Logger;
     
     // Chunking parameters (based on research)
-    private readonly MAX_CHUNK_SIZE = 2000; // characters, similar to astchunk
     private readonly MIN_CHUNK_SIZE = 30;   // capture small functions while avoiding tiny fragments
     private readonly PREFERRED_CHUNK_SIZE = 1000; // sweet spot for search
 
-    constructor() {
+    constructor(private configurationService: ConfigurationService) {
         this.logger = new Logger('TREESITTER-CHUNKER', 'info');
     }
 
@@ -249,9 +249,10 @@ export class TreeSitterChunkExtractor {
         // Check if this node represents a semantic unit
         if (semanticTypes.has(node.type)) {
             const unitText = sourceCode.slice(node.startIndex, node.endIndex);
-            
+
             // Only include units that meet size criteria
-            if (unitText.length >= this.MIN_CHUNK_SIZE && unitText.length <= this.MAX_CHUNK_SIZE) {
+            const chunkingConfig = this.configurationService.getChunkingConfig();
+            if (unitText.length >= this.MIN_CHUNK_SIZE && unitText.length <= chunkingConfig.maxChunkSize) {
                 units.push({
                     type: this.mapNodeTypeToChunkType(node.type),
                     startIndex: node.startIndex,
@@ -289,7 +290,8 @@ export class TreeSitterChunkExtractor {
             const combinedSize = (unit.endIndex - currentUnit.startIndex);
 
             // Merge if gap is small and combined size is reasonable
-            if (gap < 100 && combinedSize <= this.MAX_CHUNK_SIZE) {
+            const chunkingConfig = this.configurationService.getChunkingConfig();
+            if (gap < 100 && combinedSize <= chunkingConfig.maxChunkSize) {
                 // Merge units
                 currentUnit = {
                     type: 'mixed',

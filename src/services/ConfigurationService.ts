@@ -5,11 +5,32 @@
 
 import { Logger } from '../utils/Logger.js';
 
+export interface SearchConfig {
+    defaultVectorWeight: number;
+    defaultBm25Weight: number;
+    defaultResultLimit: number;
+}
+
+export interface ChunkingConfig {
+    maxChunkSize: number;
+    treeSitterLimit: number;
+    jinaMaxChars: number;
+    semanticContextMargin: number;
+}
+
+export interface ProcessingConfig {
+    maxAgeHours: number;
+    batchSize: number;
+}
+
 export interface McpConfig {
     wildcardApiKey: string;
     jinaApiKey: string;
     turbopufferApiKey: string;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
+    search: SearchConfig;
+    chunking: ChunkingConfig;
+    processing: ProcessingConfig;
 }
 
 export interface ServiceCapabilities {
@@ -68,7 +89,22 @@ export class ConfigurationService {
             wildcardApiKey: process.env.WILDCARD_API_KEY || 'test',
             jinaApiKey: process.env.JINA_API_KEY || 'test',
             turbopufferApiKey: process.env.TURBOPUFFER_API_KEY || 'test',
-            logLevel: validLogLevel
+            logLevel: validLogLevel,
+            search: {
+                defaultVectorWeight: 0.6,  // Primary weight for vector similarity
+                defaultBm25Weight: 0.4,    // Secondary weight for keyword matching
+                defaultResultLimit: 8
+            },
+            chunking: {
+                maxChunkSize: 1500,         // Standardized chunk size limit
+                treeSitterLimit: 32768,     // 32KB TreeSitter reliable limit
+                jinaMaxChars: 20000,        // Conservative Jina API character limit
+                semanticContextMargin: 100  // Margin for context size calculations
+            },
+            processing: {
+                maxAgeHours: 24,           // Default incremental update window
+                batchSize: 50              // Default batch processing size
+            }
         };
         
         const finalConfig = { ...baseConfig, ...override };
@@ -199,6 +235,18 @@ export class ConfigurationService {
             apiKey: this.config.turbopufferApiKey,
             isAvailable: !!(this.config.turbopufferApiKey && this.config.turbopufferApiKey !== 'test')
         };
+    }
+
+    getSearchConfig(): SearchConfig {
+        return { ...this.config.search };
+    }
+
+    getChunkingConfig(): ChunkingConfig {
+        return { ...this.config.chunking };
+    }
+
+    getProcessingConfig(): ProcessingConfig {
+        return { ...this.config.processing };
     }
 
 

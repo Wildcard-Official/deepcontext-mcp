@@ -16,6 +16,7 @@ import { LanguageDetector } from '../../utils/LanguageDetector.js';
 import { ContentFilterProvider } from './ContentFilterProvider.js';
 import { TreeSitterSymbolExtractorFull } from './TreeSitterSymbolExtractor.treesitter-based.js';
 import { TreeSitterChunkExtractor, SemanticChunk } from './TreeSitterChunkExtractor.js';
+import { ConfigurationService } from '../../services/ConfigurationService.js';
 import { Logger } from '../../utils/Logger.js';
 import { CodeChunk, IndexingRequest } from '../../types/core.js';
 
@@ -62,7 +63,9 @@ export class IndexingOrchestrator {
         this.languageDetector = new LanguageDetector();
         this.contentFilter = new ContentFilterProvider();
         this.symbolExtractor = new TreeSitterSymbolExtractorFull();
-        this.chunkExtractor = new TreeSitterChunkExtractor();
+        // Create a default configuration service for now - ideally this should be injected
+        const defaultConfigService = new ConfigurationService();
+        this.chunkExtractor = new TreeSitterChunkExtractor(defaultConfigService);
         this.logger = new Logger('INDEXING-ORCHESTRATOR', 'debug');
         this.services = services;
     }

@@ -6,6 +6,7 @@
 
 import { Logger } from '../utils/Logger.js';
 import { SymbolInfo } from '../types/core.js';
+import { ConfigurationService } from './ConfigurationService.js';
 
 // Local interface for SemanticSubChunker - simplified for chunking operations
 export interface CodeChunk {
@@ -42,11 +43,10 @@ export interface SemanticSection {
 
 export class SemanticSubChunker {
     private logger: Logger;
-    private readonly MAX_CHUNK_SIZE = 1500; // Activate for larger TreeSitter chunks to add context
     private readonly MIN_OVERLAP_SIZE = 1000; // Minimum context overlap
     private readonly CONTEXT_WINDOW = 500;   // Context around important sections
 
-    constructor() {
+    constructor(private configurationService: ConfigurationService) {
         this.logger = new Logger('SEMANTIC-SUBCHUNKER');
     }
 
@@ -54,7 +54,8 @@ export class SemanticSubChunker {
      * Main entry point: Split a large chunk into semantic sub-chunks
      */
     async splitLargeChunk(chunk: CodeChunk): Promise<CodeChunk[]> {
-        if (chunk.content.length <= this.MAX_CHUNK_SIZE) {
+        const chunkingConfig = this.configurationService.getChunkingConfig();
+        if (chunk.content.length <= chunkingConfig.maxChunkSize) {
             return [chunk];
         }
 
@@ -297,8 +298,11 @@ export class SemanticSubChunker {
         let currentSize = 0;
         let subChunkIndex = 0;
 
+        // Get chunking configuration
+        const chunkingConfig = this.configurationService.getChunkingConfig();
+
         // Calculate base context size
-        const baseContextSize = context.fileHeader.length + context.globalContext.length + 100; // margin
+        const baseContextSize = context.fileHeader.length + context.globalContext.length + chunkingConfig.semanticContextMargin;
 
         for (let i = 0; i < sections.length; i++) {
             const section = sections[i];
@@ -307,7 +311,7 @@ export class SemanticSubChunker {
             // Check if adding this section would exceed limits
             const projectedSize = currentSize + sectionSize + baseContextSize;
 
-            if (projectedSize > this.MAX_CHUNK_SIZE && currentSections.length > 0) {
+            if (projectedSize > chunkingConfig.maxChunkSize && currentSections.length > 0) {
                 // Create sub-chunk from current sections
                 const subChunk = this.createSubChunk(
                     currentSections, context, originalChunk, subChunkIndex
@@ -453,7 +457,8 @@ export class SemanticSubChunker {
             }
 
             // Check size limits
-            if (chunk.content.length > this.MAX_CHUNK_SIZE) {
+            const chunkingConfig = this.configurationService.getChunkingConfig();
+            if (chunk.content.length > chunkingConfig.maxChunkSize) {
                 issues.push(`Sub-chunk ${chunk.id} exceeds size limit: ${chunk.content.length}`);
             }
         }

@@ -55,10 +55,10 @@ export class StandaloneContextMcp {
         
         this.logger = new Logger('STANDALONE-INTEGRATION', this.config.logLevel);
         this.languageDetector = new LanguageDetector();
-        this.jinaApiService = new JinaApiService(this.config.jinaApiKey);
-        this.turbopufferService = new TurbopufferService(this.config.turbopufferApiKey);
+        this.jinaApiService = new JinaApiService(this.config.jinaApiKey, this.configurationService);
+        this.turbopufferService = new TurbopufferService(this.config.turbopufferApiKey, this.configurationService);
         this.symbolExtractor = new TreeSitterSymbolExtractorFull();
-        this.semanticSubChunker = new SemanticSubChunker();
+        this.semanticSubChunker = new SemanticSubChunker(this.configurationService);
 
         // Initialize NamespaceManagerService first (needed for metadata callback)
         this.namespaceManagerService = new NamespaceManagerService(this.turbopufferService);
@@ -174,6 +174,7 @@ export class StandaloneContextMcp {
             this.jinaApiService,
             this.turbopufferService,
             connectionExtractor,
+            this.configurationService,
             'SearchCoordinationService'
         );
         

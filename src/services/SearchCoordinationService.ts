@@ -6,6 +6,7 @@
 import { Logger } from '../utils/Logger.js';
 import { JinaApiService } from './JinaApiService.js';
 import { TurbopufferService } from './TurbopufferService.js';
+import { ConfigurationService } from './ConfigurationService.js';
 import { SearchResult, SearchResponse } from '../types/core.js';
 
 export interface SearchOptions {
@@ -28,6 +29,7 @@ export class SearchCoordinationService {
         private jinaApiService: JinaApiService,
         private turbopufferService: TurbopufferService,
         private connectionExtractor: (filePath: string, content: string) => Promise<any>,
+        private configurationService: ConfigurationService,
         loggerName: string = 'SearchCoordinationService'
     ) {
         this.logger = new Logger(loggerName);
@@ -69,14 +71,17 @@ export class SearchCoordinationService {
             const embedding = await this.jinaApiService.generateEmbedding(query);
             this.logger.info(`Embedding generated: ${embedding.length} dimensions`);
 
+            // Get search configuration
+            const searchConfig = this.configurationService.getSearchConfig();
+
             // Use Turbopuffer hybrid search
             this.logger.info('Calling Turbopuffer hybrid search...');
             const rawResults = await this.turbopufferService.hybridSearch(namespace, {
                 embedding,
                 query,
-                limit: options.limit || 10,
-                vectorWeight: options.vectorWeight || 0.1,
-                bm25Weight: options.bm25Weight || 0.9
+                limit: options.limit || searchConfig.defaultResultLimit,
+                vectorWeight: options.vectorWeight || searchConfig.defaultVectorWeight,
+                bm25Weight: options.bm25Weight || searchConfig.defaultBm25Weight
             });
 
             this.logger.info(`Raw results received: ${rawResults.length}`);
@@ -118,8 +123,8 @@ export class SearchCoordinationService {
                 strategy: 'hybrid',
                 message: `Found ${results.length} results`,
                 metadata: {
-                    vectorResults: Math.floor(results.length * (options.vectorWeight || 0.7)),
-                    bm25Results: Math.floor(results.length * (options.bm25Weight || 0.3)),
+                    vectorResults: Math.floor(results.length * (options.vectorWeight || searchConfig.defaultVectorWeight)),
+                    bm25Results: Math.floor(results.length * (options.bm25Weight || searchConfig.defaultBm25Weight)),
                     totalMatches: results.length,
                     reranked: options.enableReranking !== false
                 }
@@ -174,7 +179,9 @@ export class SearchCoordinationService {
         try {
             this.logger.info(`📝 BM25 search: "${query}" in namespace: ${namespace}`);
 
-            const limit = options.limit || 10;
+            // Get search configuration
+            const searchConfig = this.configurationService.getSearchConfig();
+            const limit = options.limit || searchConfig.defaultResultLimit;
 
             // Direct BM25 search through TurbopufferService
             const searchResults = await this.turbopufferService.query(namespace, {

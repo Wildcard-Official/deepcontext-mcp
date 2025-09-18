@@ -6,6 +6,7 @@
 import { Logger } from '../utils/Logger.js';
 import { TurbopufferStore, VectorSearchResult } from '../types/search.js';
 import { fetchMirrored } from '../utils/wildcardFetch.js';
+import { ConfigurationService } from './ConfigurationService.js';
 
 export interface VectorStoreResult {
     id: string;
@@ -35,9 +36,13 @@ export class TurbopufferService implements TurbopufferStore {
     private readonly baseUrl = 'https://gcp-us-central1.turbopuffer.com/v2';
     private readonly logger: Logger;
 
-    constructor(private apiKey: string, loggerName: string = 'TurbopufferService') {
+    constructor(
+        private apiKey: string,
+        private configurationService: ConfigurationService,
+        loggerName: string = 'TurbopufferService'
+    ) {
         this.logger = new Logger(loggerName);
-        
+
         if (!apiKey) {
             throw new Error('Turbopuffer API key is required');
         }
@@ -79,9 +84,12 @@ export class TurbopufferService implements TurbopufferStore {
      * Query Turbopuffer namespace with various options
      */
     async query(namespace: string, options: QueryOptions): Promise<VectorStoreResult[]> {
+        // Get search configuration
+        const searchConfig = this.configurationService.getSearchConfig();
+
         const requestBody: any = {
             include_attributes: options.include_attributes || ['content', 'filePath', 'startLine', 'endLine', 'language'],
-            top_k: options.limit || 10
+            top_k: options.limit || searchConfig.defaultResultLimit
         };
 
         // Handle different search types based on options
@@ -139,9 +147,11 @@ export class TurbopufferService implements TurbopufferStore {
      * Advanced hybrid search combining vector similarity and BM25 with RRF fusion
      */
     async hybridSearch(namespace: string, options: HybridSearchOptions): Promise<VectorStoreResult[]> {
-        const limit = options.limit || 10;
-        const vectorWeight = options.vectorWeight || 0.6; // Reduced for better balance
-        const bm25Weight = options.bm25Weight || 0.4; // Increased for better keyword matching
+        // Get search configuration
+        const searchConfig = this.configurationService.getSearchConfig();
+        const limit = options.limit || searchConfig.defaultResultLimit;
+        const vectorWeight = options.vectorWeight || searchConfig.defaultVectorWeight;
+        const bm25Weight = options.bm25Weight || searchConfig.defaultBm25Weight;
         
         // Use Turbopuffer's queries array format (same as backend implementation)
         const response = await fetchMirrored(

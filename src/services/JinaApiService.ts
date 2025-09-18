@@ -5,6 +5,7 @@
 
 import { Logger } from '../utils/Logger.js';
 import { fetchMirrored } from '../utils/wildcardFetch.js';
+import { ConfigurationService } from './ConfigurationService.js';
 
 export interface RerankerResult {
     index: number;
@@ -37,9 +38,13 @@ export class JinaApiService {
     private readonly baseUrl = 'https://api.jina.ai/v1';
     private readonly logger: Logger;
 
-    constructor(private apiKey: string, loggerName: string = 'JinaApiService') {
+    constructor(
+        private apiKey: string,
+        private configurationService: ConfigurationService,
+        loggerName: string = 'JinaApiService'
+    ) {
         this.logger = new Logger(loggerName);
-        
+
         if (!apiKey) {
             throw new Error('Jina API key is required');
         }
@@ -258,7 +263,8 @@ export class JinaApiService {
      * Jina API limit: 8194 tokens (roughly ~32KB of text)
      */
     private truncateForJinaApi(text: string): string {
-        const MAX_CHARS = 20000; // Very conservative estimate: 8194 tokens ≈ 20KB max
+        const chunkingConfig = this.configurationService.getChunkingConfig();
+        const MAX_CHARS = chunkingConfig.jinaMaxChars;
         
         if (text.length <= MAX_CHARS) {
             return text;
