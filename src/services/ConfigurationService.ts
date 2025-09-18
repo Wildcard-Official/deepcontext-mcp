@@ -21,6 +21,7 @@ export interface ChunkingConfig {
 export interface ProcessingConfig {
     maxAgeHours: number;
     batchSize: number;
+    batchDelayMs: number;
 }
 
 export interface McpConfig {
@@ -98,12 +99,13 @@ export class ConfigurationService {
             chunking: {
                 maxChunkSize: 1500,         // Standardized chunk size limit
                 treeSitterLimit: 32768,     // 32KB TreeSitter reliable limit
-                jinaMaxChars: 20000,        // Conservative Jina API character limit
+                jinaMaxChars: 20000,        // Jina API character limit per chunk
                 semanticContextMargin: 100  // Margin for context size calculations
             },
             processing: {
                 maxAgeHours: 24,           // Default incremental update window
-                batchSize: 50              // Default batch processing size
+                batchSize: 20,             // Conservative batch size to prevent API payload limits
+                batchDelayMs: 500          // Delay between batches in milliseconds
             }
         };
         

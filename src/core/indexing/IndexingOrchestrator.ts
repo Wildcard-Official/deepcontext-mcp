@@ -432,7 +432,8 @@ export class IndexingOrchestrator {
                 
                 // Add conservative delay between batches to avoid rate limiting
                 if (batchNumber < totalBatches) {
-                    const delay = 1000; // 1 second between batches - optimized for speed
+                    const processingConfig = this.configurationService.getProcessingConfig();
+                    const delay = processingConfig.batchDelayMs;
                     this.logger.debug(`⏱️  Waiting ${delay}ms before next batch...`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
