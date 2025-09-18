@@ -390,20 +390,24 @@ export class IndexingOrchestrator {
 
         this.logger.info(`Uploading ${chunks.length} chunks to vector store and local metadata...`);
         
-        const batchSize = 15; // Reduced to 15 to avoid rate limiting on Wildcard API
+        const batchSize = 50; // Optimized batch size for faster processing
         let successfulBatches = 0;
         let skippedBatches = 0;
 
         for (let i = 0; i < chunks.length; i += batchSize) {
             const batch = chunks.slice(i, i + batchSize);
             const batchNumber = Math.floor(i / batchSize) + 1;
-            
+            const totalBatches = Math.ceil(chunks.length / batchSize);
 
             try {
+                this.logger.info(`📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} chunks)`);
+                
                 // Generate embeddings for batch
+                this.logger.debug(`🧠 Generating embeddings for ${batch.length} chunks...`);
                 const embeddings = await this.services.jinaApiService.generateEmbeddingBatch(
                     batch.map(chunk => chunk.content)
                 );
+                this.logger.debug(`✅ Generated ${embeddings.length} embeddings`);
 
                 // Prepare upsert data in Turbopuffer v2 format with schema for full-text search
                 const upsertData = batch.map((chunk, idx) => ({
@@ -419,13 +423,15 @@ export class IndexingOrchestrator {
                 }));
 
                 // Upload to Turbopuffer
+                this.logger.debug(`⬆️  Upserting ${upsertData.length} vectors to namespace: ${namespace}`);
                 await this.services.turbopufferService.upsert(namespace, upsertData);
+                this.logger.info(`✅ Batch ${batchNumber}/${totalBatches} completed successfully`);
                 successfulBatches++;
                 
                 // Add conservative delay between batches to avoid rate limiting
-                const totalBatches = Math.ceil(chunks.length / batchSize);
                 if (batchNumber < totalBatches) {
-                    const delay = 4000; // 4 seconds between batches - conservative rate limiting
+                    const delay = 1000; // 1 second between batches - optimized for speed
+                    this.logger.debug(`⏱️  Waiting ${delay}ms before next batch...`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             } catch (error) {

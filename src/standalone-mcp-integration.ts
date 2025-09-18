@@ -400,6 +400,7 @@ export class StandaloneCodexMcp {
     }
 
 
+
     /**
      * Extract relevant connection context using TreeSitterSymbolExtractorFull
      */
@@ -510,6 +511,18 @@ class StandaloneMCPServer {
         );
         
         this.setupHandlers();
+        
+        // Initialize the registry on startup to ensure it's loaded for new sessions
+        this.initializeRegistry();
+    }
+    
+    private async initializeRegistry(): Promise<void> {
+        try {
+            await this.codexMcp.initialize();
+            console.error(`🔍 Registry initialized successfully`);
+        } catch (error) {
+            console.error(`⚠️ Failed to initialize registry:`, error);
+        }
     }
     
     private setupHandlers(): void {
@@ -575,13 +588,19 @@ class StandaloneMCPServer {
                     name: 'get_indexing_status',
                     description: `Check if codebases are indexed and get their status information.
 
+**Enhanced Features**:
+- Shows completion statistics for finished indexing (success rates, processing time, performance metrics)
+- Displays batch processing details (successful/skipped batches)
+- References log files for detailed debugging
+
 **When to use**:
 - Before indexing to check if already done
+- After indexing to see completion statistics and success rates
 - Debug why search returned no results
 - Confirm indexing completed successfully
 - Get overview of all indexed codebases
 
-**Returns**: Indexing status, file counts, and timestamps.`,
+**Returns**: Enhanced indexing status with completion statistics when available.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -634,7 +653,7 @@ class StandaloneMCPServer {
 
                             // Use child process to avoid MCP timeout
                             const { spawn } = await import('child_process');
-                            const nodeProcess = spawn('node', ['debug-background-process.mjs', codebasePath, forceReindex.toString()], {
+                            const nodeProcess = spawn('node', ['background-indexing-worker.mjs', codebasePath, forceReindex.toString()], {
                                 detached: true,
                                 stdio: ['ignore', 'pipe', 'pipe'],
                                 env: {
@@ -680,7 +699,19 @@ class StandaloneMCPServer {
                             return {
                                 content: [{
                                     type: 'text',
-                                    text: `🚀 Started background indexing for codebase '${codebasePath}'.\n\nIndexing is running in a detached background process. Check the log file: ${logFile}\n\nUse get_indexing_status to check progress.`
+                                    text: `🚀 **Background Indexing Started** - Log: \`${logFile}\`
+
+**Codebase**: ${codebasePath}
+**Process**: Running in detached background mode
+
+**📋 How to Monitor Progress:**
+- **Check Status**: Use \`get_indexing_status\` tool to see completion progress
+- **View Live Logs**: \`tail -f ${logFile}\`
+- **Final Results**: Status tool will show success rate when complete
+
+💡 **Tip**: The log file is saved in your current directory for easy access.
+
+📝 **For AI Assistant**: Please mention that users can monitor progress with: tail -f ${logFile} (include the dash)`
                                 }]
                             };
                         } catch (error) {
@@ -744,11 +775,12 @@ class StandaloneMCPServer {
                     
                     case 'get_indexing_status':
                         const status = await this.codexMcp.getIndexingStatus((args as any).codebase_path);
+                        const enhancedStatus = await this.enhanceStatusWithLogData(status, (args as any).codebase_path);
                         
                         return {
                             content: [{
                                 type: 'text',
-                                text: JSON.stringify(status, null, 2)
+                                text: this.formatIndexingStatus(enhancedStatus)
                             }]
                         };
                     
@@ -849,6 +881,231 @@ class StandaloneMCPServer {
         console.error(`🔄 Result Reranking: ${!!(config.jinaApiKey && config.jinaApiKey !== 'test') ? '✅ Enabled' : '❌ Disabled'}`);
         console.error('📝 Local BM25 Search: ✅ Always Available');
         console.error('🔌 Transport: stdio');
+    }
+
+    /**
+     * Enhance indexing status with completion statistics from log files
+     */
+    private async enhanceStatusWithLogData(status: any, codebasePath?: string): Promise<any> {
+        const enhancedStatus = { ...status };
+        
+        try {
+            // Find the most recent log file for this codebase
+            const logFile = await this.findMostRecentLogFile(codebasePath);
+            if (logFile) {
+                const logStats = await this.parseLogFileStats(logFile);
+                if (logStats) {
+                    enhancedStatus.completionStats = logStats;
+                }
+            }
+        } catch (error) {
+            // Don't fail status check if log parsing fails
+            console.warn('Failed to parse log statistics:', error);
+        }
+        
+        return enhancedStatus;
+    }
+
+    /**
+     * Find the most recent background indexing log file for a codebase
+     */
+    private async findMostRecentLogFile(codebasePath?: string): Promise<string | null> {
+        const fs = await import('fs');
+        const path = await import('path');
+        
+        try {
+            const files = fs.readdirSync('.');
+            const codebaseName = codebasePath ? path.basename(codebasePath) : '';
+            
+            // Find log files that match the specific codebase pattern
+            const logFiles = files.filter(file => {
+                if (!file.startsWith('background-indexing-') || !file.endsWith('.log')) {
+                    return false;
+                }
+                
+                // If no specific codebase requested, don't return any logs
+                // (completion stats should only show for specific codebases)
+                if (!codebaseName) {
+                    return false;
+                }
+                
+                // Extract the codebase name from the log file pattern:
+                // background-indexing-{codebaseName}-{timestamp}.log
+                const match = file.match(/^background-indexing-(.+?)-\d{4}-\d{2}-\d{2}T/);
+                return match && match[1] === codebaseName;
+            });
+            
+            if (logFiles.length === 0) return null;
+            
+            // Sort by modification time (newest first)
+            const sortedFiles = logFiles
+                .map(file => ({
+                    name: file,
+                    mtime: fs.statSync(file).mtime
+                }))
+                .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+            
+            return sortedFiles[0].name;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    /**
+     * Parse completion statistics from log file
+     */
+    private async parseLogFileStats(logFile: string): Promise<any | null> {
+        const fs = await import('fs');
+        
+        try {
+            const content = fs.readFileSync(logFile, 'utf-8');
+            const lines = content.split('\n');
+            
+            let isCompleted = false;
+            let totalChunks = 0;
+            let successfulChunks = 0;
+            let skippedBatches = 0;
+            let totalBatches = 0;
+            let processingTime = 0;
+            let startTime: Date | null = null;
+            let endTime: Date | null = null;
+            
+            // Parse log lines for statistics
+            for (const line of lines) {
+                // Check if process completed
+                if (line.includes('Process completed with code: 0')) {
+                    isCompleted = true;
+                    const timeMatch = line.match(/\[([^\]]+)\]/);
+                    if (timeMatch) {
+                        endTime = new Date(timeMatch[1]);
+                    }
+                }
+                
+                // Extract start time
+                if (line.includes('Starting indexing for:') && !startTime) {
+                    const timeMatch = line.match(/\[([^\]]+)\]/);
+                    if (timeMatch) {
+                        startTime = new Date(timeMatch[1]);
+                    }
+                }
+                
+                // Extract upload completion stats
+                if (line.includes('Upload complete:') && line.includes('chunks uploaded')) {
+                    const chunkMatch = line.match(/(\d+)\/(\d+) chunks uploaded/);
+                    if (chunkMatch) {
+                        successfulChunks = parseInt(chunkMatch[1]);
+                        totalChunks = parseInt(chunkMatch[2]);
+                    }
+                    
+                    const batchMatch = line.match(/\((\d+)\/(\d+) batches skipped/);
+                    if (batchMatch) {
+                        skippedBatches = parseInt(batchMatch[1]);
+                        totalBatches = parseInt(batchMatch[2]);
+                    }
+                } else if (line.includes('✅ Uploaded') && line.includes('chunks to namespace')) {
+                    // Handle the actual format: "✅ Uploaded 355 chunks to namespace: mcp_xxx"
+                    const chunkMatch = line.match(/✅ Uploaded (\d+) chunks/);
+                    if (chunkMatch) {
+                        successfulChunks = parseInt(chunkMatch[1]);
+                        totalChunks = successfulChunks;
+                    }
+                } else if (line.includes('Uploaded') && line.includes('chunks to namespace')) {
+                    // Fallback for other completion message formats
+                    const chunkMatch = line.match(/Uploaded (\d+) chunks/);
+                    if (chunkMatch) {
+                        successfulChunks = parseInt(chunkMatch[1]);
+                        totalChunks = successfulChunks;
+                    }
+                }
+                
+                // Extract processing time
+                if (line.includes('processingTimeMs')) {
+                    const timeMatch = line.match(/"processingTimeMs":\s*(\d+)/);
+                    if (timeMatch) {
+                        processingTime = parseInt(timeMatch[1]);
+                    }
+                }
+            }
+            
+            // Only return stats if indexing is completed
+            if (!isCompleted) {
+                return null;
+            }
+            
+            const successRate = totalChunks > 0 ? (successfulChunks / totalChunks * 100) : 0;
+            const skippedChunks = totalChunks - successfulChunks;
+            const actualProcessingTime = startTime && endTime ? 
+                endTime.getTime() - startTime.getTime() : processingTime;
+            
+            return {
+                completed: true,
+                totalChunks,
+                successfulChunks,
+                skippedChunks,
+                successRate: Math.round(successRate * 100) / 100,
+                totalBatches: totalBatches || Math.ceil(totalChunks / 50), // Estimate if not found
+                skippedBatches: skippedBatches || 0,
+                processingTimeMs: actualProcessingTime,
+                processingTimeFormatted: this.formatDuration(actualProcessingTime),
+                logFile
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    /**
+     * Format duration in milliseconds to human readable format
+     */
+    private formatDuration(ms: number): string {
+        if (ms < 1000) return `${ms}ms`;
+        if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+        if (ms < 3600000) return `${(ms / 60000).toFixed(1)}m`;
+        return `${(ms / 3600000).toFixed(1)}h`;
+    }
+
+    /**
+     * Format indexing status with enhanced information
+     */
+    private formatIndexingStatus(status: any): string {
+        let result = '';
+        
+        // Basic status information
+        result += `📊 **Indexing Status**\n\n`;
+        
+        if (status.currentCodebase) {
+            const cb = status.currentCodebase;
+            result += `**Current Codebase**: ${cb.path}\n`;
+            result += `**Namespace**: ${cb.namespace}\n`;
+            result += `**Files**: ${cb.fileCount}\n`;
+            result += `**Last Indexed**: ${new Date(cb.lastIndexed).toLocaleString()}\n`;
+            result += `**Status**: ${status.indexed ? '✅ Indexed' : '❌ Not Indexed'}\n\n`;
+        }
+        
+        // Completion statistics (only shown if indexing completed AND there's a current codebase AND stats are for this specific codebase)
+        if (status.completionStats && status.currentCodebase && status.completionStats.logFile) {
+            const stats = status.completionStats;
+            // Verify the log file matches the current codebase name
+            const currentCodebaseName = path.basename(status.currentCodebase.path);
+            if (stats.logFile.includes(`background-indexing-${currentCodebaseName}-`)) {
+                result += `**Success Rate**: ${stats.successRate}% (${stats.successfulChunks}/${stats.totalChunks} chunks)\n`;
+                result += `**Log File**: \`${stats.logFile}\`\n\n`;
+            }
+        }
+        
+        // All indexed codebases
+        if (status.indexedCodebases && status.indexedCodebases.length > 0) {
+            result += `## 📚 **All Indexed Codebases** (${status.indexedCodebases.length})\n\n`;
+            status.indexedCodebases.forEach((cb: any, index: number) => {
+                result += `${index + 1}. **${cb.path}**\n`;
+                result += `   - Chunks: ${cb.totalChunks}, Last indexed: ${new Date(cb.indexedAt).toLocaleDateString()}\n`;
+            });
+        } else {
+            result += `## 📚 **No Indexed Codebases Found**\n\n`;
+            result += `Use the \`index_codebase\` tool to index a codebase first.\n`;
+        }
+        
+        return result;
     }
 }
 

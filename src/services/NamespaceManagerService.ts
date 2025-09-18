@@ -262,13 +262,16 @@ export class NamespaceManagerService {
     private async loadIndexedCodebases(): Promise<void> {
         try {
             const dataPath = this.getIndexedCodebasesPath();
+            console.error(`[DEBUG] Loading registry from: ${dataPath}`);
             const content = await fs.readFile(dataPath, 'utf-8');
             const data = JSON.parse(content);
             
             this.indexedCodebases = new Map(data);
+            console.error(`[DEBUG] Successfully loaded ${this.indexedCodebases.size} indexed codebases`);
             this.logger.info(`📂 Loaded ${this.indexedCodebases.size} indexed codebases from disk`);
         } catch (error) {
             // No existing data, start fresh
+            console.error(`[DEBUG] Failed to load registry: ${error instanceof Error ? error.message : String(error)}`);
             this.indexedCodebases = new Map();
             this.logger.info('📂 Starting with empty indexed codebases (no existing data)');
         }
@@ -278,8 +281,19 @@ export class NamespaceManagerService {
      * Initialize the service by loading existing data
      */
     async initialize(): Promise<void> {
+        console.error(`[DEBUG] NamespaceManagerService.initialize() called`);
         await this.loadIndexedCodebases();
+        console.error(`[DEBUG] NamespaceManagerService initialized with ${this.indexedCodebases.size} indexed codebases`);
         this.logger.info(`🚀 NamespaceManagerService initialized with ${this.indexedCodebases.size} indexed codebases`);
+    }
+
+    /**
+     * Refresh the registry by reloading from disk (for background indexing updates)
+     */
+    async refreshRegistry(): Promise<void> {
+        console.error(`[DEBUG] Refreshing registry from disk`);
+        await this.loadIndexedCodebases();
+        console.error(`[DEBUG] Registry refreshed with ${this.indexedCodebases.size} indexed codebases`);
     }
 
     /**
@@ -324,6 +338,9 @@ export class NamespaceManagerService {
         indexed: boolean;
         fileCount: number;
     }> {
+        // Refresh registry to pick up any background indexing updates
+        await this.refreshRegistry();
+        
         const indexedList = Array.from(this.indexedCodebases.values());
 
         let currentCodebase: IndexedCodebase | undefined;
