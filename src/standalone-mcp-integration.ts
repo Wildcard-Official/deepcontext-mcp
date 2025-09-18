@@ -691,21 +691,14 @@ class StandaloneMCPServer {
                                 logStream.write(`[${new Date().toISOString()}] Process completed with code: ${code}\n`);
                                 logStream.end();
                                 console.log(`Background indexing process completed with code: ${code}`);
-                                
-                                // Log completion message for AI assistant to notice
-                                if (code === 0) {
-                                    console.error(`🎉 **INDEXING COMPLETED** for ${path.basename(codebasePath)} - Use get_indexing_status to see success rate and statistics`);
-                                } else {
-                                    console.error(`❌ **INDEXING FAILED** for ${path.basename(codebasePath)} with code: ${code} - Check log: ${logFile}`);
-                                }
                             });
 
                             // Detach the process so it runs independently
                             nodeProcess.unref();
 
-                                return {
-                                    content: [{
-                                        type: 'text',
+                            return {
+                                content: [{
+                                    type: 'text',
                                     text: `🚀 **Background Indexing Started** - Log: \`${logFile}\`
 
 **Codebase**: ${codebasePath}
@@ -718,7 +711,7 @@ class StandaloneMCPServer {
 
 💡 **Tip**: The log file is saved in your current directory for easy access.
 
-📝 **For AI Assistant**: Please mention that users can monitor progress with: tail -f ${logFile} (include the dash). When indexing completes, use get_indexing_status tool to show the success rate and completion statistics.`
+📝 **For AI Assistant**: Please mention that users can monitor progress with: tail -f ${logFile} (include the dash)`
                                 }]
                             };
                         } catch (error) {
@@ -1124,5 +1117,5 @@ const main = async () => {
 
 main().catch((error: unknown) => {
     console.error(error);
-        process.exit(1);
-    });
+    process.exit(1);
+});
