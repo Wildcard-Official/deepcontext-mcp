@@ -42,9 +42,9 @@ export class NamespaceManagerService {
      * Generate a namespace from a codebase path
      */
     generateNamespace(codebasePath: string): string {
-        const normalized = path.resolve(codebasePath);
+        const normalized = path.resolve(codebasePath) + (process.env.WILDCARD_API_KEY ?? '');
         const hash = crypto.createHash('md5').update(normalized).digest('hex');
-        return `mcp_${hash.substring(0, 8)}`;
+        return `mcp_${hash.substring(0, 16)}`;
     }
 
     /**

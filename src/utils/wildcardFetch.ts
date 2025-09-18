@@ -3,7 +3,7 @@ export function useWildcard(): boolean {
 }
 
 export function wildcardBaseUrl(): string {
-  return process.env.WILDCARD_API_URL || 'https://intelligent-context-backend.onrender.com' || 'http://localhost:4000';
+  return process.env.WILDCARD_API_URL || 'https://deepcontext.mcp.wild-card.ai' || 'http://localhost:4000';
 }
 
 export async function wildcardFetch(
