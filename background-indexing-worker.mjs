@@ -1,5 +1,5 @@
 // Production background indexing worker process
-import { StandaloneCodexMcp } from './dist/standalone-mcp-integration.js';
+import { StandaloneContextMcp } from './dist/standalone-mcp-integration.js';
 
 // Get command line arguments
 const codebasePath = process.argv[2];
@@ -22,21 +22,21 @@ if (!process.env.WILDCARD_API_KEY) {
 }
 
 try {
-    const codex = new StandaloneCodexMcp({
+    const context = new StandaloneContextMcp({
         wildcardApiKey: process.env.WILDCARD_API_KEY
     });
 
     console.log('[BACKGROUND] Initialized successfully');
     
     // Initialize the namespace manager to ensure registry is loaded
-    await codex.initialize();
+    await context.initialize();
     console.log('[BACKGROUND] Namespace manager initialized');
-    
+
     console.log('[BACKGROUND] About to start indexCodebase()...');
     console.log('[BACKGROUND] Codebase path:', codebasePath);
     console.log('[BACKGROUND] Force reindex:', forceReindex);
 
-    const result = await codex.indexCodebase(codebasePath, forceReindex);
+    const result = await context.indexCodebase(codebasePath, forceReindex);
 
     console.log('[BACKGROUND] Raw result:', JSON.stringify(result, null, 2));
     console.log(`[BACKGROUND] ✅ Indexing completed for ${codebasePath}: ${result.chunksCreated} chunks`);
@@ -44,7 +44,7 @@ try {
     // Register the codebase in the namespace manager if indexing succeeded
     if (result.success && result.chunksCreated > 0) {
         try {
-            await codex.namespaceManagerService.registerCodebase(
+            await context.namespaceManagerService.registerCodebase(
                 codebasePath,
                 result.chunksCreated,
                 new Date()

@@ -106,9 +106,10 @@ export class StandaloneContextMcp {
                         const batch = processedChunks.slice(i, i + BATCH_SIZE);
 
                         // Validate chunk sizes before embedding
+                        const chunkingConfig = this.configurationService.getChunkingConfig();
                         for (const chunk of batch) {
-                            if (chunk.content.length > 20000) {
-                                this.logger.warn(`⚠️ Chunk ${chunk.id} still exceeds 20K chars (${chunk.content.length}) - may cause embedding errors`);
+                            if (chunk.content.length > chunkingConfig.jinaMaxChars) {
+                                this.logger.warn(`⚠️ Chunk ${chunk.id} still exceeds ${chunkingConfig.jinaMaxChars} chars (${chunk.content.length}) - may cause embedding errors`);
                             }
                         }
 
@@ -258,10 +259,11 @@ export class StandaloneContextMcp {
         }
 
         const namespace = indexed.namespace;
+        const searchConfig = this.configurationService.getSearchConfig();
         const searchResult = await this.searchCoordinationService.searchHybrid(namespace, query, {
-            limit: options.limit || 10,
-            vectorWeight: options.vectorWeight || 0.1,
-            bm25Weight: options.bm25Weight || 0.9
+            limit: options.limit || searchConfig.defaultResultLimit,
+            vectorWeight: options.vectorWeight || searchConfig.defaultVectorWeight,
+            bm25Weight: options.bm25Weight || searchConfig.defaultBm25Weight
         });
 
         return {
@@ -308,8 +310,9 @@ export class StandaloneContextMcp {
         }
 
         const namespace = indexed.namespace;
+        const searchConfig = this.configurationService.getSearchConfig();
         const searchResult = await this.searchCoordinationService.searchBM25(namespace, query, {
-            limit: options.limit || 10,
+            limit: options.limit || searchConfig.defaultResultLimit,
             enableReranking: options.enableReranking !== false
         });
         
@@ -324,7 +327,7 @@ export class StandaloneContextMcp {
     /**
      * Intelligent search using SearchCoordinationService
      */
-    async searchWithIntelligence(query: string, codebasePath?: string, maxResults = 10): Promise<{
+    async searchWithIntelligence(query: string, codebasePath?: string, maxResults?: number): Promise<{
         success: boolean;
         results: CodeChunk[];
         totalResults: number;
@@ -336,11 +339,12 @@ export class StandaloneContextMcp {
             await this.ensureUpToDateIndex(codebasePath);
         }
 
+        const searchConfig = this.configurationService.getSearchConfig();
         const searchResult = await this.searchCoordinationService.searchWithIntelligence(
             query,
             codebasePath,
             this.namespaceManagerService.getAllIndexedCodebases(),
-            maxResults
+            maxResults || searchConfig.defaultResultLimit
         );
         
         if (searchResult.success && searchResult.results.length > 0) {
