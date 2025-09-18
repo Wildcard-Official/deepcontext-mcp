@@ -29,7 +29,41 @@ export async function wildcardFetch(
     delete headers['content-type'];
   }
 
-  return fetch(url, { ...init, headers });
+  // Retry logic for rate limiting and 403 errors
+  const maxRetries = 3;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, { ...init, headers });
+      
+      // If we get a 403 with HTML content (rate limiting), retry with backoff
+      if (response.status === 403) {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('text/html')) {
+          console.log(`[WILDCARD-FETCH] Rate limited (403 HTML), attempt ${attempt}/${maxRetries}`);
+          if (attempt < maxRetries) {
+            // Exponential backoff: 2s, 4s, 8s
+            const delay = Math.pow(2, attempt) * 1000;
+            console.log(`[WILDCARD-FETCH] Retrying in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+        }
+      }
+      
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+      console.log(`[WILDCARD-FETCH] Network error, attempt ${attempt}/${maxRetries}:`, error);
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError || new Error(`Failed after ${maxRetries} attempts`);
 }
 
 export async function fetchMirrored(

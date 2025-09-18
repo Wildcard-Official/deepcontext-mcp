@@ -189,6 +189,7 @@ export class StandaloneCodexMcp {
         chunksCreated: number;
         processingTimeMs: number;
         message: string;
+        errors?: Array<{ file: string; error: string }>;
     }> {
         const indexingRequest = {
             codebasePath,
@@ -207,8 +208,9 @@ export class StandaloneCodexMcp {
             processingTimeMs: indexResult.metadata?.indexingTime || 0,
             message: indexResult.success 
                 ? `Successfully indexed ${indexResult.metadata?.totalFiles || 0} files into ${indexResult.chunks?.length || 0} intelligent chunks`
-                : `Indexing failed with ${indexResult.errors?.length || 0} errors`        
-            };
+                : `Indexing failed with ${indexResult.errors?.length || 0} errors`,
+            errors: indexResult.errors
+        };
     }
 
     /**
@@ -623,29 +625,63 @@ class StandaloneMCPServer {
                         try {
                             // Resolve relative paths to absolute paths
                             const codebasePath = path.resolve((args as any).codebase_path);
-                            console.log(`🔍 Indexing path: ${(args as any).codebase_path} -> ${codebasePath}`);
+                            const forceReindex = (args as any).force_reindex || false;
+                            console.log(`🔍 Starting background indexing: ${(args as any).codebase_path} -> ${codebasePath}`);
 
-                            const indexResult = await this.codexMcp.indexCodebase(
-                                codebasePath,
-                                (args as any).force_reindex || false
-                            );
+                            // Spawn background process for indexing
+                            const logFile = `background-indexing-${path.basename(codebasePath)}-${new Date().toISOString().replace(/:/g, '-')}.log`;
 
-                            if (indexResult.success) {
-                                return {
-                                    content: [{
-                                        type: 'text',
-                                        text: `✅ Indexing completed: ${indexResult.chunksCreated} chunks created in ${indexResult.processingTimeMs}ms`
-                                    }]
-                                };
-                            } else {
-                                // Provide detailed error information
-                                return {
-                                    content: [{
-                                        type: 'text',
-                                        text: `❌ Indexing failed: ${indexResult.message}\n\nDetailed Results:\n${JSON.stringify(indexResult, null, 2)}`
-                                    }]
-                                };
-                            }
+                            // Use child process to avoid MCP timeout
+                            const { spawn } = await import('child_process');
+                            const nodeProcess = spawn('node', ['debug-background-process.mjs', codebasePath, forceReindex.toString()], {
+                                detached: true,
+                                stdio: ['ignore', 'pipe', 'pipe'],
+                                env: {
+                                    ...process.env,
+                                    WILDCARD_API_KEY: process.env.WILDCARD_API_KEY,
+                                    WILDCARD_API_URL: process.env.WILDCARD_API_URL
+                                },
+                                cwd: process.cwd()
+                            });
+
+                            // Pipe output to log file
+                            const fsSync = await import('fs');
+                            const logStream = fsSync.default.createWriteStream(logFile);
+
+                            const addTimestamp = (data: Buffer) => {
+                                const lines = data.toString().split('\n');
+                                return lines.filter(line => line.trim()).map(line =>
+                                    `[${new Date().toISOString()}] ${line}`
+                                ).join('\n') + '\n';
+                            };
+
+                            nodeProcess.stdout?.on('data', (data) => {
+                                const timestampedData = addTimestamp(data);
+                                logStream.write(timestampedData);
+                                console.log(timestampedData.trim());
+                            });
+
+                            nodeProcess.stderr?.on('data', (data) => {
+                                const timestampedData = addTimestamp(data);
+                                logStream.write(timestampedData);
+                                console.error(timestampedData.trim());
+                            });
+
+                            nodeProcess.on('close', (code) => {
+                                logStream.write(`[${new Date().toISOString()}] Process completed with code: ${code}\n`);
+                                logStream.end();
+                                console.log(`Background indexing process completed with code: ${code}`);
+                            });
+
+                            // Detach the process so it runs independently
+                            nodeProcess.unref();
+
+                            return {
+                                content: [{
+                                    type: 'text',
+                                    text: `🚀 Started background indexing for codebase '${codebasePath}'.\n\nIndexing is running in a detached background process. Check the log file: ${logFile}\n\nUse get_indexing_status to check progress.`
+                                }]
+                            };
                         } catch (error) {
                             // Catch any unhandled errors
                             return {

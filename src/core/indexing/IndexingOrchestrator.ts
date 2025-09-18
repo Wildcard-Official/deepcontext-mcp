@@ -84,6 +84,7 @@ export class IndexingOrchestrator {
         try {
             // Initialize symbol extractor if not already initialized
             await this.symbolExtractor.initialize();
+
             // Step 1: Discover files
             const allFiles = await this.fileUtils.discoverFiles(
                 request.codebasePath,
@@ -199,7 +200,7 @@ export class IndexingOrchestrator {
                     totalChunks: 0,
                     totalSymbols: 0,
                     indexingTime: Date.now() - startTime,
-                    indexingMethod: 'full',
+                    indexingMethod: 'full' as const,
                     features: {
                         astExtraction: false,
                         contentFiltering: false,
@@ -210,6 +211,7 @@ export class IndexingOrchestrator {
                 chunks: [],
                 errors: [{ file: 'system', error: error instanceof Error ? error.message : String(error) }]
             };
+
         }
     }
 
@@ -334,8 +336,24 @@ export class IndexingOrchestrator {
             const results = await Promise.allSettled(
                 batch.map(async (file) => {
                     try {
-                        const content = await fs.readFile(file, 'utf-8');
                         const relativePath = path.relative(codebasePath, file);
+
+                        // Check file size first to avoid reading large files into memory
+                        const stats = await fs.stat(file);
+                        if (stats.size > 500000) { // 500KB limit (same as ContentFilterProvider)
+                            return {
+                                file,
+                                shouldInclude: {
+                                    include: false,
+                                    reason: 'File too large (likely data file)',
+                                    confidence: 0.9
+                                },
+                                relativePath
+                            };
+                        }
+
+                        // Only read content for files under size limit
+                        const content = await fs.readFile(file, 'utf-8');
                         const shouldInclude = this.contentFilter.shouldInclude(relativePath, content);
                         return { file, shouldInclude, relativePath };
                     } catch (error) {
@@ -366,39 +384,71 @@ export class IndexingOrchestrator {
      */
     private async uploadChunksToVectorStore(namespace: string, chunks: CodeChunk[]): Promise<void> {
         if (!chunks.length || !this.services?.jinaApiService || !this.services?.turbopufferService) {
+            this.logger.warn(`⚠️ Vector store upload skipped: chunks=${chunks.length}, jinaApiService=${!!this.services?.jinaApiService}, turbopufferService=${!!this.services?.turbopufferService}`);
             return;
         }
-        
+
         this.logger.info(`Uploading ${chunks.length} chunks to vector store and local metadata...`);
         
-        const batchSize = 50;
+        const batchSize = 15; // Reduced to 15 to avoid rate limiting on Wildcard API
+        let successfulBatches = 0;
+        let skippedBatches = 0;
+
         for (let i = 0; i < chunks.length; i += batchSize) {
             const batch = chunks.slice(i, i + batchSize);
-            
-            // Generate embeddings for batch
-            const embeddings = await this.services.jinaApiService.generateEmbeddingBatch(
-                batch.map(chunk => chunk.content)
-            );
-            
-            // Prepare upsert data in Turbopuffer v2 format with schema for full-text search
-            const upsertData = batch.map((chunk, idx) => ({
-                id: chunk.id,
-                vector: embeddings[idx],
-                content: chunk.content,
-                filePath: chunk.filePath,
-                relativePath: chunk.relativePath,
-                startLine: chunk.startLine,
-                endLine: chunk.endLine,
-                language: chunk.language,
-                symbols: (chunk.symbols || []).map(s => typeof s === 'string' ? s : s.name).join(',')
-            }));
+            const batchNumber = Math.floor(i / batchSize) + 1;
             
 
-            // Upload to Turbopuffer
-            await this.services.turbopufferService.upsert(namespace, upsertData);
+            try {
+                // Generate embeddings for batch
+                const embeddings = await this.services.jinaApiService.generateEmbeddingBatch(
+                    batch.map(chunk => chunk.content)
+                );
+
+                // Prepare upsert data in Turbopuffer v2 format with schema for full-text search
+                const upsertData = batch.map((chunk, idx) => ({
+                    id: chunk.id,
+                    vector: embeddings[idx],
+                    content: chunk.content,
+                    filePath: chunk.filePath,
+                    relativePath: chunk.relativePath,
+                    startLine: chunk.startLine,
+                    endLine: chunk.endLine,
+                    language: chunk.language,
+                    symbols: (chunk.symbols || []).map(s => typeof s === 'string' ? s : s.name).join(',')
+                }));
+
+                // Upload to Turbopuffer
+                await this.services.turbopufferService.upsert(namespace, upsertData);
+                successfulBatches++;
+                
+                // Add conservative delay between batches to avoid rate limiting
+                const totalBatches = Math.ceil(chunks.length / batchSize);
+                if (batchNumber < totalBatches) {
+                    const delay = 4000; // 4 seconds between batches - conservative rate limiting
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            } catch (error) {
+                // After 3 exponential retries in wildcardFetch, skip this batch and continue
+                skippedBatches++;
+                this.logger.warn(`⚠️ Skipping batch ${batchNumber} after retries failed. Continuing with remaining batches.`);
+                this.logger.warn(`Skipped batch error:`, error instanceof Error ? error.message : String(error));
+                
+                // Don't throw - just continue to next batch
+                // The batch will be lost but indexing continues
+                continue;
+            }
         }
         
-        this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace}`);
+        const totalBatches = Math.ceil(chunks.length / batchSize);
+        const successfulChunks = successfulBatches * batchSize;
+        const skippedChunks = Math.min(skippedBatches * batchSize, chunks.length - successfulChunks);
+        
+        if (skippedBatches > 0) {
+            this.logger.info(`✅ Upload complete: ${successfulChunks}/${chunks.length} chunks uploaded to namespace: ${namespace} (${skippedBatches}/${totalBatches} batches skipped due to rate limiting)`);
+        } else {
+            this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace}`);
+        }
     }
 
     /**
