@@ -5,6 +5,7 @@
  */
 
 import { Logger } from '../utils/Logger.js';
+import { SymbolInfo } from '../types/core.js';
 
 // Local interface for SemanticSubChunker - simplified for chunking operations
 export interface CodeChunk {
@@ -15,12 +16,7 @@ export interface CodeChunk {
     startLine: number;
     endLine: number;
     language: string;
-    symbols: Array<{
-        name: string;
-        type: 'function' | 'class' | 'interface' | 'type' | 'variable' | 'constant';
-        line: number;
-        scope?: string;
-    }>;
+    symbols: SymbolInfo[];
     imports: Array<{
         module: string;
         symbols: string[];
@@ -39,12 +35,7 @@ export interface SemanticSection {
     type: 'header' | 'import' | 'export' | 'class' | 'function' | 'interface' | 'comment' | 'other';
     startLine: number;
     endLine: number;
-    symbols: Array<{
-        name: string;
-        type: 'function' | 'class' | 'interface' | 'type' | 'variable' | 'constant';
-        line: number;
-        scope?: string;
-    }>;
+    symbols: SymbolInfo[];
     dependencies: string[];      // What this section depends on
     priority: number;            // How important this section is (1-10)
 }
@@ -204,7 +195,7 @@ export class SemanticSubChunker {
 
         // Extract symbols for this section
         const symbols = chunk.symbols.filter(symbol =>
-            symbol.line >= startLine && symbol.line <= endLine
+            symbol.startLine >= startLine && symbol.startLine <= endLine
         );
 
         // Determine priority based on section type

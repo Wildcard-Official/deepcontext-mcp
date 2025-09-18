@@ -265,7 +265,6 @@ export class IndexingOrchestrator {
                         type: symbol.type as 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace',
                         startLine: symbol.startLine,
                         endLine: symbol.endLine,
-                        line: symbol.startLine, // Keep for backward compatibility
                         scope: symbol.scope
                     }));
 

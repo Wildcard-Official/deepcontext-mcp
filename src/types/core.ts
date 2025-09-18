@@ -39,6 +39,7 @@ export interface SearchResponse {
     success: boolean;
     results: SearchResult[];
     totalResults: number;
+    searchTime: number;
     searchTimeMs: number;
     strategy: string;
     message: string;
@@ -61,6 +62,12 @@ export interface SearchResult {
     symbols: string[];
     score: number;
     context?: string;
+    similarity?: number;
+    connections?: {
+        imports: string[];
+        exports: string[];
+        relatedFiles: string[];
+    };
 }
 
 export interface CodeChunk {
@@ -84,7 +91,6 @@ export interface SymbolInfo {
     type: 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace';
     startLine: number;
     endLine: number;
-    line: number; // Keep for backward compatibility
     scope?: string;
 }
 

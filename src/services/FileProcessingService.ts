@@ -363,40 +363,6 @@ export class FileProcessingService {
         }
     }
 
-    /**
-     * Hash-based change detection methods (kept for compatibility)
-     */
-    private async isFileModified(codebasePath: string, filePath: string): Promise<boolean> {
-        const metadata = this.getFileMetadata(codebasePath, filePath);
-
-        if (!metadata) {
-            // File not tracked yet, consider it modified
-            return true;
-        }
-
-        try {
-            const stats = await fs.stat(filePath);
-
-            // Quick check: modification time
-            if (stats.mtime > metadata.lastModified) {
-                // Quick check: file size
-                if (stats.size !== metadata.size) {
-                    return true;
-                }
-
-                // Accurate check: content hash
-                const content = await fs.readFile(filePath, 'utf-8');
-                const currentHash = this.calculateContentHash(content);
-
-                return currentHash !== metadata.contentHash;
-            }
-
-            return false; // File not modified
-        } catch (error) {
-            // File might not exist or be readable
-            return true;
-        }
-    }
 
     private calculateContentHash(content: string): string {
         return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');

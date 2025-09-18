@@ -12,6 +12,7 @@
  */
 
 import { Logger } from '../../utils/Logger.js';
+import { SymbolInfo } from '../../types/core.js';
 import * as crypto from 'crypto';
 
 // Import Tree-sitter modules
@@ -52,12 +53,7 @@ export interface SemanticChunk {
     endLine: number;
     language: string;
     chunkType: 'class' | 'function' | 'interface' | 'type' | 'module' | 'mixed';
-    symbols: Array<{
-        name: string;
-        type: 'function' | 'class' | 'interface' | 'type' | 'variable' | 'constant';
-        line: number;
-        scope?: string;
-    }>;
+    symbols: SymbolInfo[];
     imports: Array<{
         module: string;
         symbols: string[];
@@ -383,7 +379,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: classMatch[1],
                     type: 'class',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
             
@@ -393,7 +390,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: interfaceMatch[1],
                     type: 'interface',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
             
@@ -403,7 +401,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: functionMatch[1],
                     type: 'function',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
             
@@ -413,7 +412,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: methodMatch[1],
                     type: 'function',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
             
@@ -423,7 +423,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: typeMatch[1],
                     type: 'type',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
             
@@ -433,7 +434,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: constMatch[1],
                     type: 'constant',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
         });
@@ -451,7 +453,8 @@ export class TreeSitterChunkExtractor {
                     symbols.push({
                         name,
                         type: this.mapNodeTypeToSymbolType(node.type),
-                        line: node.startPosition.row + 1
+                        startLine: node.startPosition.row + 1,
+                        endLine: node.endPosition.row + 1
                     });
                 }
                 break;
@@ -592,7 +595,8 @@ export class TreeSitterChunkExtractor {
 
                     // Adjust symbol line numbers
                     chunk.symbols.forEach(symbol => {
-                        symbol.line += window.startLine;
+                        symbol.startLine += window.startLine;
+                        symbol.endLine += window.startLine;
                     });
 
                     allChunks.push(chunk);
@@ -790,7 +794,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: funcMatch[1],
                     type: 'function',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
 
@@ -800,7 +805,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: classMatch[1],
                     type: 'class',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
 
@@ -810,7 +816,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: interfaceMatch[1],
                     type: 'interface',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
 
@@ -820,7 +827,8 @@ export class TreeSitterChunkExtractor {
                 symbols.push({
                     name: typeMatch[1],
                     type: 'type',
-                    line: lineNumber
+                    startLine: lineNumber,
+                    endLine: lineNumber
                 });
             }
         });

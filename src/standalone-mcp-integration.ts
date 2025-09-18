@@ -34,7 +34,7 @@ import { SemanticSubChunker } from './services/SemanticSubChunker.js';
 import { CodeChunk } from './types/core.js';
 import { McpConfig } from './services/ConfigurationService.js';
 
-export class StandaloneCodexMcp {
+export class StandaloneContextMcp {
     private config: McpConfig;
     public indexingOrchestrator: IndexingOrchestrator;
     private languageDetector: LanguageDetector;
@@ -492,10 +492,10 @@ export class StandaloneCodexMcp {
 // MCP Server Implementation
 class StandaloneMCPServer {
     private server: Server;
-    private codexMcp: StandaloneCodexMcp;
+    private contextMcp: StandaloneContextMcp;
     
     constructor() {
-        this.codexMcp = new StandaloneCodexMcp();
+        this.contextMcp = new StandaloneContextMcp();
         
         this.server = new Server(
             {
@@ -518,7 +518,7 @@ class StandaloneMCPServer {
     
     private async initializeRegistry(): Promise<void> {
         try {
-            await this.codexMcp.initialize();
+            await this.contextMcp.initialize();
             console.error(`🔍 Registry initialized successfully`);
         } catch (error) {
             console.error(`⚠️ Failed to initialize registry:`, error);
@@ -728,7 +728,7 @@ class StandaloneMCPServer {
                         console.log(`🔍 STANDALONE MCP TOOL CALLED: search_codebase with query "${(args as any).query}"`);
                         
                         // Note: Incremental indexing is automatically triggered before each search
-                        const searchResult = await this.codexMcp.searchWithIntelligence(
+                        const searchResult = await this.contextMcp.searchWithIntelligence(
                             (args as any).query,
                             (args as any).codebase_path,
                             (args as any).max_results || 5
@@ -774,7 +774,7 @@ class StandaloneMCPServer {
                         };
                     
                     case 'get_indexing_status':
-                        const status = await this.codexMcp.getIndexingStatus((args as any).codebase_path);
+                        const status = await this.contextMcp.getIndexingStatus((args as any).codebase_path);
                         // Use the current codebase path if none was explicitly provided
                         let codebasePathForLogs = (args as any).codebase_path || status.currentCodebase?.path;
 
@@ -793,7 +793,7 @@ class StandaloneMCPServer {
                         };
                     
                     case 'clear_index':
-                        const clearResult = await this.codexMcp.clearIndex((args as any).codebase_path);
+                        const clearResult = await this.contextMcp.clearIndex((args as any).codebase_path);
                         
                         return {
                             content: [{
@@ -835,7 +835,7 @@ class StandaloneMCPServer {
 
             switch (uri) {
                 case 'mcp://codebase-status':
-                    const status = await this.codexMcp.getIndexingStatus();
+                    const status = await this.contextMcp.getIndexingStatus();
                     return {
                         contents: [{
                             type: 'text',
@@ -880,7 +880,7 @@ class StandaloneMCPServer {
         }
         
         // Initialize the standalone MCP integration
-        await this.codexMcp.initialize();
+        await this.contextMcp.initialize();
         
         const transport = new StdioServerTransport();
         await this.server.connect(transport);

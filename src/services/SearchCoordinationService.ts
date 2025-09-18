@@ -6,6 +6,7 @@
 import { Logger } from '../utils/Logger.js';
 import { JinaApiService } from './JinaApiService.js';
 import { TurbopufferService } from './TurbopufferService.js';
+import { SearchResult, SearchResponse } from '../types/core.js';
 
 export interface SearchOptions {
     limit?: number;
@@ -16,43 +17,8 @@ export interface SearchOptions {
     enableReranking?: boolean;
 }
 
-export interface SearchResult {
-    id: string;
-    score: number;
-    content: string;
-    filePath: string;
-    startLine: number;
-    endLine: number;
-    symbols: string[];
-    language: string;
-    similarity?: number;
-    connections?: {
-        imports: string[];
-        exports: string[];
-        relatedFiles: string[];
-    };
-}
 
-export interface SearchResponse {
-    success: boolean;
-    results: SearchResult[];
-    searchTime: number;
-    strategy: string;
-    metadata?: {
-        vectorResults?: number;
-        bm25Results?: number;
-        totalMatches?: number;
-        reranked?: boolean;
-    };
-}
 
-export interface IntelligentSearchResponse {
-    success: boolean;
-    results: any[];
-    totalResults: number;
-    searchTimeMs: number;
-    message: string;
-}
 
 
 export class SearchCoordinationService {
@@ -81,8 +47,11 @@ export class SearchCoordinationService {
             return {
                 success: false,
                 results: [],
+                totalResults: 0,
                 searchTime: Date.now() - startTime,
+                searchTimeMs: Date.now() - startTime,
                 strategy: 'hybrid',
+                message: 'Empty query provided',
                 metadata: {
                     vectorResults: 0,
                     bm25Results: 0,
@@ -127,6 +96,7 @@ export class SearchCoordinationService {
                     score: result.score,
                     content: content,
                     filePath: result.metadata.filePath,
+                    relativePath: result.metadata.relativePath || result.metadata.filePath,
                     startLine: result.metadata.startLine,
                     endLine: result.metadata.endLine,
                     symbols: result.metadata.symbols ? result.metadata.symbols.split(',').filter(Boolean) : [],
@@ -142,8 +112,11 @@ export class SearchCoordinationService {
             return {
                 success: true,
                 results,
+                totalResults: results.length,
                 searchTime,
+                searchTimeMs: searchTime,
                 strategy: 'hybrid',
+                message: `Found ${results.length} results`,
                 metadata: {
                     vectorResults: Math.floor(results.length * (options.vectorWeight || 0.7)),
                     bm25Results: Math.floor(results.length * (options.bm25Weight || 0.3)),
@@ -153,16 +126,19 @@ export class SearchCoordinationService {
             };
 
         } catch (error) {
-            this.logger.error('Hybrid search failed', { 
-                error: error instanceof Error ? error.message : String(error), 
+            this.logger.error('Hybrid search failed', {
+                error: error instanceof Error ? error.message : String(error),
                 stack: error instanceof Error ? error.stack : undefined,
-                query: query.substring(0, 50) 
+                query: query.substring(0, 50)
             });
             return {
                 success: false,
                 results: [],
+                totalResults: 0,
                 searchTime: Date.now() - startTime,
+                searchTimeMs: Date.now() - startTime,
                 strategy: 'hybrid',
+                message: `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 metadata: {
                     vectorResults: 0,
                     bm25Results: 0,
@@ -187,8 +163,11 @@ export class SearchCoordinationService {
             return {
                 success: false,
                 results: [],
+                totalResults: 0,
                 searchTime: Date.now() - startTime,
-                strategy: 'bm25'
+                searchTimeMs: Date.now() - startTime,
+                strategy: 'bm25',
+                message: 'Empty query provided'
             };
         }
         
@@ -209,6 +188,7 @@ export class SearchCoordinationService {
                 content: item.metadata?.content || '',
                 symbols: item.metadata?.symbols ? item.metadata.symbols.split(',').filter(Boolean) : [],
                 filePath: item.metadata?.filePath || '',
+                relativePath: item.metadata?.relativePath || item.metadata?.filePath || '',
                 startLine: item.metadata?.startLine || 0,
                 endLine: item.metadata?.endLine || 0,
                 language: item.metadata?.language || ''
@@ -243,8 +223,11 @@ export class SearchCoordinationService {
             return {
                 success: true,
                 results,
+                totalResults: results.length,
                 searchTime,
-                strategy: 'bm25'
+                searchTimeMs: searchTime,
+                strategy: 'bm25',
+                message: `Found ${results.length} results`
             };
 
         } catch (error) {
@@ -255,8 +238,11 @@ export class SearchCoordinationService {
             return {
                 success: false,
                 results: [],
+                totalResults: 0,
                 searchTime: Date.now() - startTime,
-                strategy: 'bm25'
+                searchTimeMs: Date.now() - startTime,
+                strategy: 'bm25',
+                message: `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`
             };
         }
     }
@@ -296,7 +282,7 @@ export class SearchCoordinationService {
         codebasePath: string | undefined,
         indexedCodebases: Map<string, any>,
         maxResults: number = 10
-    ): Promise<IntelligentSearchResponse> {
+    ): Promise<SearchResponse> {
         const startTime = Date.now();
         
         try {
@@ -314,7 +300,9 @@ export class SearchCoordinationService {
                         success: false,
                         results: [],
                         totalResults: 0,
+                        searchTime: Date.now() - startTime,
                         searchTimeMs: Date.now() - startTime,
+                        strategy: 'intelligent',
                         message: `Codebase not found or not indexed: ${codebasePath}`
                     };
                 }
@@ -328,7 +316,9 @@ export class SearchCoordinationService {
                         success: false,
                         results: [],
                         totalResults: 0,
+                        searchTime: Date.now() - startTime,
                         searchTimeMs: Date.now() - startTime,
+                        strategy: 'intelligent',
                         message: 'No indexed codebases available'
                     };
                 }
@@ -368,7 +358,9 @@ export class SearchCoordinationService {
                     success: true,
                     results: searchResult.results,
                     totalResults: searchResult.results.length,
+                    searchTime: searchTimeMs,
                     searchTimeMs,
+                    strategy: 'intelligent',
                     message: `Found ${searchResult.results.length} relevant code chunks`
                 };
             } else {
@@ -376,7 +368,9 @@ export class SearchCoordinationService {
                     success: true,
                     results: [],
                     totalResults: 0,
+                    searchTime: searchTimeMs,
                     searchTimeMs,
+                    strategy: 'intelligent',
                     message: 'No relevant code chunks found for the query'
                 };
             }
@@ -391,7 +385,9 @@ export class SearchCoordinationService {
                 success: false,
                 results: [],
                 totalResults: 0,
+                searchTime: Date.now() - startTime,
                 searchTimeMs: Date.now() - startTime,
+                strategy: 'intelligent',
                 message: `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`
             };
         }
