@@ -1,15 +1,15 @@
 {
-  "name": "@wildcard-corp/intelligent-context-mcp",
-  "version": "1.0.0",
+  "name": "@wildcard-ai/deepcodex",
+  "version": "0.0.1",
   "description": "Advanced codebase indexing and semantic search MCP server with dependency graph analysis for Claude Code",
   "main": "dist/standalone-mcp-integration.js",
   "type": "module",
   "bin": {
-    "intelligent-context-mcp": "dist/standalone-mcp-integration.js"
+    "deepcodex": "dist/standalone-mcp-integration.js"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Wildcard-Official/intelligent-context-mcp.git"
+    "url": "https://github.com/Wildcard-Official/deepcodex.git"
   },
   "keywords": [
     "mcp",
@@ -21,8 +21,8 @@
     "jina-ai",
     "turbopuffer"
   ],
-  "author": "Wildcard Corporation",
-  "license": "MIT",
+  "author": "Wildcard AI, Inc",
+  "license": "Apache-2.0",
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/standalone-mcp-integration.ts",
