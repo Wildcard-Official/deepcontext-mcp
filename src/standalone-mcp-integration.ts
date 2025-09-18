@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Standalone MCP Integration
  * Provides intelligent codebase indexing and search capabilities via Model Context Protocol.
@@ -851,11 +852,13 @@ class StandaloneMCPServer {
     }
 }
 
-// Auto-run when called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Always run when executed as a CLI
+const main = async () => {
     const server = new StandaloneMCPServer();
-    server.run().catch((error) => {
-        console.error(`Fatal error: ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(1);
-    });
-}
+    await server.run();
+};
+
+main().catch((error: unknown) => {
+    console.error(error);
+    process.exit(1);
+});

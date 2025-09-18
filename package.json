@@ -1,6 +1,6 @@
 {
   "name": "@wildcard-ai/deepcodex",
-  "version": "0.0.1",
+  "version": "0.0.7",
   "description": "Advanced codebase indexing and semantic search MCP server with dependency graph analysis for Claude Code",
   "main": "dist/standalone-mcp-integration.js",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Wildcard-Official/deepcodex.git"
+    "url": "git+https://github.com/Wildcard-Official/deepcodex.git"
   },
   "keywords": [
     "mcp",
@@ -24,10 +24,11 @@
   "author": "Wildcard AI, Inc",
   "license": "Apache-2.0",
   "scripts": {
-    "build": "tsc",
+    "start": "npm run build && node dist/standalone-mcp-integration.js",
+    "build": "tsc --project tsconfig.build.json && chmod +x dist/standalone-mcp-integration.js",
     "dev": "tsx watch src/standalone-mcp-integration.ts",
-    "start": "node dist/standalone-mcp-integration.js",
-    "prepublishOnly": "npm run build"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.6.0",
