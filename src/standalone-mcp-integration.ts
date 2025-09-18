@@ -775,8 +775,16 @@ class StandaloneMCPServer {
                     
                     case 'get_indexing_status':
                         const status = await this.codexMcp.getIndexingStatus((args as any).codebase_path);
-                        const enhancedStatus = await this.enhanceStatusWithLogData(status, (args as any).codebase_path);
-                        
+                        // Use the current codebase path if none was explicitly provided
+                        let codebasePathForLogs = (args as any).codebase_path || status.currentCodebase?.path;
+
+                        // If we still don't have a path, try to get it from the first indexed codebase
+                        if (!codebasePathForLogs && status.indexedCodebases && status.indexedCodebases.length > 0) {
+                            codebasePathForLogs = status.indexedCodebases[0].path;
+                        }
+
+                        const enhancedStatus = await this.enhanceStatusWithLogData(status, codebasePathForLogs);
+
                         return {
                             content: [{
                                 type: 'text',
@@ -922,17 +930,21 @@ class StandaloneMCPServer {
                 if (!file.startsWith('background-indexing-') || !file.endsWith('.log')) {
                     return false;
                 }
-                
+
                 // If no specific codebase requested, don't return any logs
                 // (completion stats should only show for specific codebases)
                 if (!codebaseName) {
                     return false;
                 }
-                
+
                 // Extract the codebase name from the log file pattern:
                 // background-indexing-{codebaseName}-{timestamp}.log
-                const match = file.match(/^background-indexing-(.+?)-\d{4}-\d{2}-\d{2}T/);
-                return match && match[1] === codebaseName;
+                // Note: codebaseName can contain hyphens, so we need to be more careful
+                const match = file.match(/^background-indexing-(.+?)-(\d{4}-\d{2}-\d{2}T.+)\.log$/);
+                if (!match) return false;
+
+                const logCodebaseName = match[1];
+                return logCodebaseName === codebaseName;
             });
             
             if (logFiles.length === 0) return null;
@@ -989,40 +1001,41 @@ class StandaloneMCPServer {
                     }
                 }
                 
-                // Extract upload completion stats
-                if (line.includes('Upload complete:') && line.includes('chunks uploaded')) {
-                    const chunkMatch = line.match(/(\d+)\/(\d+) chunks uploaded/);
+                // Extract upload completion stats - look for the actual completion message
+                if (line.includes('✅ Uploaded') && line.includes('chunks to namespace')) {
+                    // Handle the actual format: "✅ Uploaded 354 chunks to namespace: mcp_xxx"
+                    const chunkMatch = line.match(/✅ Uploaded (\d+) chunks to namespace/);
                     if (chunkMatch) {
                         successfulChunks = parseInt(chunkMatch[1]);
-                        totalChunks = parseInt(chunkMatch[2]);
+                        totalChunks = successfulChunks; // Assume all uploaded chunks were successful
                     }
-                    
-                    const batchMatch = line.match(/\((\d+)\/(\d+) batches skipped/);
+                }
+
+                // Look for batch completion messages to count total batches
+                if (line.includes('✅ Batch') && line.includes('completed successfully')) {
+                    const batchMatch = line.match(/✅ Batch (\d+)\/(\d+) completed successfully/);
                     if (batchMatch) {
-                        skippedBatches = parseInt(batchMatch[1]);
                         totalBatches = parseInt(batchMatch[2]);
-                    }
-                } else if (line.includes('✅ Uploaded') && line.includes('chunks to namespace')) {
-                    // Handle the actual format: "✅ Uploaded 355 chunks to namespace: mcp_xxx"
-                    const chunkMatch = line.match(/✅ Uploaded (\d+) chunks/);
-                    if (chunkMatch) {
-                        successfulChunks = parseInt(chunkMatch[1]);
-                        totalChunks = successfulChunks;
-                    }
-                } else if (line.includes('Uploaded') && line.includes('chunks to namespace')) {
-                    // Fallback for other completion message formats
-                    const chunkMatch = line.match(/Uploaded (\d+) chunks/);
-                    if (chunkMatch) {
-                        successfulChunks = parseInt(chunkMatch[1]);
-                        totalChunks = successfulChunks;
                     }
                 }
                 
-                // Extract processing time
+                // Extract processing time from JSON result
                 if (line.includes('processingTimeMs')) {
                     const timeMatch = line.match(/"processingTimeMs":\s*(\d+)/);
                     if (timeMatch) {
                         processingTime = parseInt(timeMatch[1]);
+                    }
+                }
+
+                // Extract chunks created from JSON result
+                if (line.includes('chunksCreated')) {
+                    const chunkMatch = line.match(/"chunksCreated":\s*(\d+)/);
+                    if (chunkMatch) {
+                        const chunks = parseInt(chunkMatch[1]);
+                        if (chunks > totalChunks) {
+                            totalChunks = chunks;
+                            successfulChunks = chunks; // Assume all created chunks were successful
+                        }
                     }
                 }
             }
@@ -1099,6 +1112,18 @@ class StandaloneMCPServer {
             status.indexedCodebases.forEach((cb: any, index: number) => {
                 result += `${index + 1}. **${cb.path}**\n`;
                 result += `   - Chunks: ${cb.totalChunks}, Last indexed: ${new Date(cb.indexedAt).toLocaleDateString()}\n`;
+
+                // Show completion stats if available for this codebase
+                if (status.completionStats && status.completionStats.logFile) {
+                    const currentCodebaseName = path.basename(cb.path);
+                    if (status.completionStats.logFile.includes(`background-indexing-${currentCodebaseName}-`)) {
+                        const stats = status.completionStats;
+                        result += `   - **Success Rate**: ${stats.successRate}% (${stats.successfulChunks}/${stats.totalChunks} chunks)\n`;
+                        result += `   - **Processing Time**: ${stats.processingTimeFormatted}\n`;
+                        result += `   - **Log**: \`${stats.logFile}\`\n`;
+                    }
+                }
+                result += `\n`;
             });
         } else {
             result += `## 📚 **No Indexed Codebases Found**\n\n`;
