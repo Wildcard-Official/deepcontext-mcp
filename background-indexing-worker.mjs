@@ -70,6 +70,19 @@ try {
         console.log('[BACKGROUND] Namespace:', result.namespace);
         console.log('[BACKGROUND] Errors property:', result.errors);
         console.log('[BACKGROUND] Errors:', result.errors ? result.errors.length : 'none');
+
+        // Register the failed indexing attempt for status tracking
+        if (result.chunksCreated === 0) {
+            try {
+                await context.namespaceManagerService.registerFailedIndexing(
+                    codebasePath,
+                    result.message || 'No indexable content found - check if files contain valid code or adjust content filtering'
+                );
+                console.log('[BACKGROUND] ✅ Failed indexing attempt registered for status tracking');
+            } catch (error) {
+                console.error('[BACKGROUND] ⚠️  Failed to register failed indexing attempt:', error.message);
+            }
+        }
         
         // Print actual error details if available
         if (result.errors && result.errors.length > 0) {

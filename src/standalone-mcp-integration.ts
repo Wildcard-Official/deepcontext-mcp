@@ -1243,7 +1243,13 @@ class StandaloneMCPServer {
             result += `**Namespace**: ${cb.namespace}\n`;
             result += `**Files**: ${cb.fileCount}\n`;
             result += `**Last Indexed**: ${new Date(cb.lastIndexed).toLocaleString()}\n`;
-            result += `**Status**: ${status.indexed ? '✅ Indexed' : '❌ Not Indexed'}\n\n`;
+
+            if (cb.failed) {
+                result += `**Status**: ❌ Indexing Failed\n`;
+                result += `**Failure Reason**: ${cb.failureReason || 'Unknown error'}\n\n`;
+            } else {
+                result += `**Status**: ${status.indexed ? '✅ Indexed' : '❌ Not Indexed'}\n\n`;
+            }
         }
         
         // Completion statistics (only shown if indexing completed AND there's a current codebase AND stats are for this specific codebase)
@@ -1262,16 +1268,22 @@ class StandaloneMCPServer {
             result += `## 📚 **All Indexed Codebases** (${status.indexedCodebases.length})\n\n`;
             status.indexedCodebases.forEach((cb: any, index: number) => {
                 result += `${index + 1}. **${cb.path}**\n`;
-                result += `   - Chunks: ${cb.totalChunks}, Last indexed: ${new Date(cb.indexedAt).toLocaleDateString()}\n`;
 
-                // Show completion stats if available for this codebase
-                if (status.completionStats && status.completionStats.logFile) {
-                    const currentCodebaseName = path.basename(cb.path);
-                    if (status.completionStats.logFile.includes(`background-indexing-${currentCodebaseName}-`)) {
-                        const stats = status.completionStats;
-                        result += `   - **Success Rate**: ${stats.successRate}% (${stats.successfulChunks}/${stats.totalChunks} chunks)\n`;
-                        result += `   - **Processing Time**: ${stats.processingTimeFormatted}\n`;
-                        result += `   - **Log**: \`${stats.logFile}\`\n`;
+                if (cb.failed) {
+                    result += `   - Status: ❌ Failed (${cb.failureReason || 'Unknown error'})\n`;
+                    result += `   - Last attempt: ${new Date(cb.indexedAt).toLocaleDateString()}\n`;
+                } else {
+                    result += `   - Chunks: ${cb.totalChunks}, Last indexed: ${new Date(cb.indexedAt).toLocaleDateString()}\n`;
+
+                    // Show completion stats if available for this codebase
+                    if (status.completionStats && status.completionStats.logFile) {
+                        const currentCodebaseName = path.basename(cb.path);
+                        if (status.completionStats.logFile.includes(`background-indexing-${currentCodebaseName}-`)) {
+                            const stats = status.completionStats;
+                            result += `   - **Success Rate**: ${stats.successRate}% (${stats.successfulChunks}/${stats.totalChunks} chunks)\n`;
+                            result += `   - **Processing Time**: ${stats.processingTimeFormatted}\n`;
+                            result += `   - **Log**: \`${stats.logFile}\`\n`;
+                        }
                     }
                 }
                 result += `\n`;

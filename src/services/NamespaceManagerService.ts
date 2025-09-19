@@ -14,6 +14,8 @@ export interface IndexedCodebase {
     namespace: string;
     totalChunks: number;
     indexedAt: string;
+    failed?: boolean;
+    failureReason?: string;
 }
 
 export interface CodebaseOperations {
@@ -69,6 +71,33 @@ export class NamespaceManagerService {
         await this.saveIndexedCodebases();
         
         this.logger.info(`📝 Registered codebase: ${resolvedPath} -> ${namespace} (${totalChunks} chunks)`);
+        return namespace;
+    }
+
+    /**
+     * Register a failed indexing attempt
+     */
+    async registerFailedIndexing(
+        codebasePath: string,
+        failureReason: string,
+        indexedAt?: Date
+    ): Promise<string> {
+        const resolvedPath = path.resolve(codebasePath);
+        const namespace = this.generateNamespace(resolvedPath);
+
+        const failedCodebase: IndexedCodebase = {
+            path: resolvedPath,
+            namespace,
+            totalChunks: 0,
+            indexedAt: (indexedAt || new Date()).toISOString(),
+            failed: true,
+            failureReason
+        };
+
+        this.indexedCodebases.set(resolvedPath, failedCodebase);
+        await this.saveIndexedCodebases();
+        this.logger.warn(`⚠️ Registered failed indexing: ${resolvedPath} - ${failureReason}`);
+
         return namespace;
     }
 

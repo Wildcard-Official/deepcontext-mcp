@@ -156,23 +156,41 @@ export class IndexingOrchestrator {
             // Upload to vector store if services are provided
             if (this.services?.jinaApiService && this.services?.turbopufferService && chunks.length > 0) {
                 this.logger.info(`Uploading ${chunks.length} chunks to vector store...`);
-                await this.uploadChunksToVectorStore(namespace, chunks);
-                
-                // Call metadata callback if provided
-                if (this.services.metadataCallback) {
+                const uploadResult = await this.uploadChunksToVectorStore(namespace, chunks);
+
+                // Call metadata callback only if upload was successful
+                if (this.services.metadataCallback && uploadResult.success) {
                     const indexedData = {
                         namespace,
-                        totalChunks: chunks.length,
+                        totalChunks: uploadResult.successfulChunks,
                         indexedAt: new Date().toISOString()
                     };
                     await this.services.metadataCallback(request.codebasePath, indexedData);
                 }
             }
             
-            this.logger.info(`✅ Complete: ${chunks.length} chunks in ${indexingTime}ms`);
+            // Determine success based on whether chunks were actually created and uploaded
+            let success = chunks.length > 0;
+            let completionMessage = `✅ Complete: ${chunks.length} chunks in ${indexingTime}ms`;
+
+            if (chunks.length === 0) {
+                success = false;
+                completionMessage = `❌ No chunks generated from ${filesToProcess.length} files - possible causes: all files filtered out, parsing failures, or empty files`;
+                this.logger.warn(completionMessage);
+
+                // Register the failed indexing attempt for status tracking
+                if (this.services?.namespaceManagerService) {
+                    await this.services.namespaceManagerService.registerFailedIndexing(
+                        request.codebasePath,
+                        'No indexable content found - check if files contain valid code or adjust content filtering'
+                    );
+                }
+            } else {
+                this.logger.info(completionMessage);
+            }
 
             return {
-                success: true,
+                success,
                 metadata: {
                     codebasePath: request.codebasePath,
                     namespace,
@@ -186,7 +204,10 @@ export class IndexingOrchestrator {
                         contentFiltering: request.enableContentFiltering !== false,
                         dependencyAnalysis: request.enableDependencyAnalysis !== false,
                         incrementalUpdate: false
-                    }
+                    },
+                    ...(chunks.length === 0 && {
+                        failureReason: 'No indexable content found - check if files contain valid code or adjust content filtering'
+                    })
                 },
                 chunks,
                 errors
@@ -384,10 +405,14 @@ export class IndexingOrchestrator {
     /**
      * Upload chunks to vector store with embedding generation
      */
-    private async uploadChunksToVectorStore(namespace: string, chunks: CodeChunk[]): Promise<void> {
+    private async uploadChunksToVectorStore(namespace: string, chunks: CodeChunk[]): Promise<{
+        success: boolean;
+        successfulChunks: number;
+        skippedChunks: number;
+    }> {
         if (!chunks.length || !this.services?.jinaApiService || !this.services?.turbopufferService) {
             this.logger.warn(`⚠️ Vector store upload skipped: chunks=${chunks.length}, jinaApiService=${!!this.services?.jinaApiService}, turbopufferService=${!!this.services?.turbopufferService}`);
-            return;
+            return { success: false, successfulChunks: 0, skippedChunks: chunks.length };
         }
 
         this.logger.info(`Uploading ${chunks.length} chunks to vector store and local metadata...`);
@@ -449,14 +474,22 @@ export class IndexingOrchestrator {
         }
         
         const totalBatches = Math.ceil(chunks.length / batchSize);
-        const successfulChunks = successfulBatches * batchSize;
-        const skippedChunks = Math.min(skippedBatches * batchSize, chunks.length - successfulChunks);
-        
+        const actualSuccessfulChunks = successfulBatches * batchSize;
+        const actualSkippedChunks = Math.min(skippedBatches * batchSize, chunks.length - actualSuccessfulChunks);
+
         if (skippedBatches > 0) {
-            this.logger.info(`✅ Upload complete: ${successfulChunks}/${chunks.length} chunks uploaded to namespace: ${namespace} (${skippedBatches}/${totalBatches} batches skipped due to rate limiting)`);
+            this.logger.info(`✅ Upload complete: ${actualSuccessfulChunks}/${chunks.length} chunks uploaded to namespace: ${namespace} (${skippedBatches}/${totalBatches} batches skipped due to rate limiting)`);
         } else {
             this.logger.info(`✅ Uploaded ${chunks.length} chunks to namespace: ${namespace}`);
         }
+
+        // Return success only if at least some chunks were uploaded successfully
+        const success = actualSuccessfulChunks > 0;
+        return {
+            success,
+            successfulChunks: actualSuccessfulChunks,
+            skippedChunks: actualSkippedChunks
+        };
     }
 
     /**
