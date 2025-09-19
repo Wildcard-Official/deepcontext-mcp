@@ -112,7 +112,7 @@ export class IndexingOrchestrator {
 
             // Step 3: Process files in batches
             const chunks: CodeChunk[] = [];
-            const batchSize = 10;
+            const batchSize = 10; // Optimal batch size for processing
             
             for (let i = 0; i < filesToProcess.length; i += batchSize) {
                 const batch = filesToProcess.slice(i, i + batchSize);
@@ -248,12 +248,12 @@ export class IndexingOrchestrator {
 
             // Convert SemanticChunk[] to CodeChunk[] format with enhanced symbols/imports
             const chunks: CodeChunk[] = chunkingResult.chunks.map(semanticChunk => {
-                // Find symbols that belong to this chunk (based on line ranges)
+                // Find symbols that belong to this chunk (precise containment)
                 const candidateSymbols = fileSymbolResult.symbols
                     .filter(symbol =>
-                        // More flexible filtering: symbol overlaps with chunk
-                        symbol.startLine <= semanticChunk.endLine &&
-                        symbol.endLine >= semanticChunk.startLine
+                        // Precise filtering: symbol is contained within chunk boundaries
+                        symbol.startLine >= semanticChunk.startLine &&
+                        symbol.endLine <= semanticChunk.endLine
                     );
 
                 this.logger.debug(`📍 Chunk ${semanticChunk.startLine}-${semanticChunk.endLine}: ${candidateSymbols.length} candidate symbols`);
@@ -261,11 +261,11 @@ export class IndexingOrchestrator {
                 const chunkSymbols = candidateSymbols
                     .filter(symbol =>
                         // Filter out symbol types not supported by SymbolInfo interface
-                        ['function', 'class', 'interface', 'variable', 'constant', 'type', 'namespace'].includes(symbol.type)
+                        ['function', 'class', 'interface', 'variable', 'constant', 'type', 'namespace', 'method', 'enum'].includes(symbol.type)
                     )
                     .map(symbol => ({
                         name: symbol.name,
-                        type: symbol.type as 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace',
+                        type: symbol.type as 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace' | 'method' | 'enum',
                         startLine: symbol.startLine,
                         endLine: symbol.endLine,
                         scope: symbol.scope
@@ -392,7 +392,7 @@ export class IndexingOrchestrator {
 
         this.logger.info(`Uploading ${chunks.length} chunks to vector store and local metadata...`);
         
-        const batchSize = 50; // Optimized batch size for faster processing
+        const batchSize = 8; // Reduced batch size to prevent Jina API truncation
         let successfulBatches = 0;
         let skippedBatches = 0;
 
@@ -430,9 +430,9 @@ export class IndexingOrchestrator {
                 this.logger.info(`✅ Batch ${batchNumber}/${totalBatches} completed successfully`);
                 successfulBatches++;
                 
-                // Add conservative delay between batches to avoid rate limiting
+                // Add minimal delay between batches to avoid rate limiting
                 if (batchNumber < totalBatches) {
-                    const delay = 500; // Default 500ms delay between batches
+                    const delay = 100; // Reduced to 100ms delay between batches
                     this.logger.debug(`⏱️  Waiting ${delay}ms before next batch...`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }

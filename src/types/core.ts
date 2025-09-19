@@ -88,7 +88,7 @@ export interface CodeChunk {
 
 export interface SymbolInfo {
     name: string;
-    type: 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace';
+    type: 'function' | 'class' | 'interface' | 'variable' | 'constant' | 'type' | 'namespace' | 'method' | 'enum';
     startLine: number;
     endLine: number;
     scope?: string;

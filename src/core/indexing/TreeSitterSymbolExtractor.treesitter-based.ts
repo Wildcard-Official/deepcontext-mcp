@@ -19,6 +19,7 @@ import { Logger } from '../../utils/Logger.js';
 let Parser: any;
 let TypeScriptLanguage: any;
 let JavaScriptLanguage: any;
+let PythonLanguage: any;
 
 // Lazy load Tree-sitter modules to handle import issues
 async function loadTreeSitter() {
@@ -26,9 +27,11 @@ async function loadTreeSitter() {
         Parser = (await import('tree-sitter')).default;
         const tsModule = await import('tree-sitter-typescript');
         const jsModule = await import('tree-sitter-javascript');
-        
+        const pyModule = await import('tree-sitter-python');
+
         TypeScriptLanguage = tsModule.default.typescript;
         JavaScriptLanguage = jsModule.default;
+        PythonLanguage = pyModule.default;
     }
 }
 
@@ -108,20 +111,25 @@ export class TreeSitterSymbolExtractorFull {
 
         try {
             await loadTreeSitter();
-            
+
             // Initialize TypeScript parser
             const tsParser = new Parser();
             tsParser.setLanguage(TypeScriptLanguage);
             this.parsers.set('typescript', tsParser);
-            
+
             // Initialize JavaScript parser
             const jsParser = new Parser();
             jsParser.setLanguage(JavaScriptLanguage);
             this.parsers.set('javascript', jsParser);
-            
+
+            // Initialize Python parser
+            const pyParser = new Parser();
+            pyParser.setLanguage(PythonLanguage);
+            this.parsers.set('python', pyParser);
+
             this.initialized = true;
-            this.logger.info('✅ Tree-sitter parsers initialized successfully');
-            
+            this.logger.info('✅ Tree-sitter parsers initialized successfully (TypeScript, JavaScript, Python)');
+
         } catch (error) {
             this.logger.error(`❌ Tree-sitter initialization failed: ${error}`);
             throw error;
@@ -292,17 +300,37 @@ export class TreeSitterSymbolExtractorFull {
                 endLine
             );
         }
+        // Process Python nodes
+        else if (language === 'python') {
+            await this.processPythonASTNode(
+                node,
+                symbols,
+                imports,
+                exports,
+                scopeStack,
+                startLine,
+                endLine
+            );
+        }
 
         // Update scope stack for child traversal
         const newScopeStack = [...scopeStack];
-        
+
         // Add to scope stack based on AST node type (not regex patterns)
         switch (nodeType) {
             case 'class_declaration':
-                newScopeStack.push('class');
+            case 'class_definition':  // Python
+                // For nested classes, track the nesting level
+                const className = this.getNodeName(node);
+                if (className) {
+                    newScopeStack.push(`class:${className}`);
+                } else {
+                    newScopeStack.push('class');
+                }
                 break;
             case 'method_definition':
             case 'function_declaration':
+            case 'function_definition':  // Python
             case 'arrow_function':
             case 'function_expression':
                 newScopeStack.push('method');
@@ -481,10 +509,223 @@ export class TreeSitterSymbolExtractorFull {
     }
 
     /**
+     * Process Python AST node for symbol extraction
+     */
+    private async processPythonASTNode(
+        node: TreeSitterNode,
+        symbols: ExtractedSymbol[],
+        imports: ExtractedImport[],
+        exports: string[],
+        scopeStack: string[],
+        startLine: number,
+        endLine: number
+    ): Promise<void> {
+        const nodeType = node.type;
+
+        switch (nodeType) {
+            case 'function_definition':
+                const funcName = this.getNodeName(node);
+                if (funcName) {
+                    const params = this.extractPythonFunctionParams(node);
+                    const isMethod = this.isInClassScope(scopeStack);
+                    const decorators = this.extractPythonDecorators(node);
+
+                    symbols.push({
+                        name: funcName,
+                        type: isMethod ? 'method' : 'function',
+                        startLine,
+                        endLine,
+                        startColumn: node.startPosition.column,
+                        endColumn: node.endPosition.column,
+                        scope: scopeStack.length === 0 ? 'global' : 'local',
+                        parameters: params,
+                        visibility: funcName.startsWith('_') ? 'private' : 'public',
+                        ...(decorators.length > 0 && { decorators })
+                    });
+                }
+                break;
+
+            case 'class_definition':
+                const className = this.getNodeName(node);
+                if (className) {
+                    const isNestedClass = this.isInClassScope(scopeStack);
+                    symbols.push({
+                        name: className,
+                        type: 'class',
+                        startLine,
+                        endLine,
+                        startColumn: node.startPosition.column,
+                        endColumn: node.endPosition.column,
+                        scope: scopeStack.length === 0 ? 'global' : 'local',
+                        visibility: className.startsWith('_') ? 'private' : 'public',
+                        ...(isNestedClass && { nested: true })
+                    });
+                }
+                break;
+
+            case 'import_statement':
+            case 'import_from_statement':
+                const importInfo = this.extractPythonImport(node);
+                if (importInfo) {
+                    imports.push(importInfo);
+                }
+                break;
+
+            case 'assignment':
+                // Handle variable assignments at all levels
+                const varName = this.extractPythonVariableName(node);
+                if (varName && !varName.startsWith('__')) { // Skip magic variables like __all__
+                    const isClassVar = this.isInClassScope(scopeStack) && !scopeStack.includes('method');
+                    const isModuleVar = scopeStack.length === 0;
+                    const isMethodVar = scopeStack.includes('method');
+
+                    // Only track meaningful variables (not all method-level assignments)
+                    const isConstantCase = varName === varName.toUpperCase() && varName.length > 1;
+                    const shouldTrack = isModuleVar || isClassVar ||
+                        (isMethodVar && (isConstantCase || varName.startsWith('_')));
+
+                    if (shouldTrack) {
+                        let varType: 'variable' | 'constant';
+                        if (isClassVar || isConstantCase) {
+                            varType = 'constant';
+                        } else {
+                            varType = 'variable';
+                        }
+
+                        symbols.push({
+                            name: varName,
+                            type: varType,
+                            startLine,
+                            endLine,
+                            startColumn: node.startPosition.column,
+                            endColumn: node.endPosition.column,
+                            scope: isModuleVar ? 'global' : 'local',
+                            visibility: varName.startsWith('_') ? 'private' : 'public'
+                        });
+                    }
+                }
+                break;
+        }
+    }
+
+    private extractPythonFunctionParams(node: TreeSitterNode): string[] {
+        const params: string[] = [];
+        const paramsNode = node.childForFieldName('parameters');
+        if (paramsNode) {
+            for (const child of paramsNode.namedChildren) {
+                if (child.type === 'identifier') {
+                    params.push(child.text);
+                }
+            }
+        }
+        return params;
+    }
+
+    private extractPythonImport(node: TreeSitterNode): ExtractedImport | null {
+        const startLine = node.startPosition.row + 1;
+
+        if (node.type === 'import_statement') {
+            // Handle: import module [as alias]
+            for (const child of node.children) {
+                if (child.type === 'aliased_import') {
+                    const nameNode = child.childForFieldName('name');
+                    const aliasNode = child.childForFieldName('alias');
+                    if (nameNode) {
+                        return {
+                            module: nameNode.text,
+                            symbols: aliasNode ? [aliasNode.text] : [],
+                            isDefault: false,
+                            isNamespace: true,
+                            line: startLine,
+                            source: node.text
+                        };
+                    }
+                } else if (child.type === 'dotted_name' || child.type === 'identifier') {
+                    return {
+                        module: child.text,
+                        symbols: [],
+                        isDefault: false,
+                        isNamespace: true,
+                        line: startLine,
+                        source: node.text
+                    };
+                }
+            }
+        } else if (node.type === 'import_from_statement') {
+            // Handle: from module import symbol [as alias], symbol2 [as alias2]
+            const moduleNode = node.childForFieldName('module_name');
+            const nameNode = node.childForFieldName('name');
+            if (moduleNode && nameNode) {
+                let symbols: string[] = [];
+
+                if (nameNode.type === 'import_list') {
+                    // Multiple imports: from module import a, b as c, d
+                    symbols = nameNode.namedChildren.map(child => {
+                        if (child.type === 'aliased_import') {
+                            const aliasNode = child.childForFieldName('alias');
+                            return aliasNode ? aliasNode.text : child.childForFieldName('name')?.text || child.text;
+                        }
+                        return child.text;
+                    });
+                } else if (nameNode.type === 'aliased_import') {
+                    // Single aliased import: from module import symbol as alias
+                    const aliasNode = nameNode.childForFieldName('alias');
+                    symbols = [aliasNode ? aliasNode.text : nameNode.childForFieldName('name')?.text || nameNode.text];
+                } else {
+                    // Single import: from module import symbol
+                    symbols = [nameNode.text];
+                }
+
+                return {
+                    module: moduleNode.text,
+                    symbols,
+                    isDefault: false,
+                    isNamespace: false,
+                    line: startLine,
+                    source: node.text
+                };
+            }
+        }
+        return null;
+    }
+
+    private extractPythonVariableName(node: TreeSitterNode): string | null {
+        const leftNode = node.childForFieldName('left');
+        if (leftNode && leftNode.type === 'identifier') {
+            return leftNode.text;
+        }
+        return null;
+    }
+
+    private extractPythonDecorators(node: TreeSitterNode): string[] {
+        const decorators: string[] = [];
+
+        // Look for previous siblings that are decorators
+        if (node.parent) {
+            for (const sibling of node.parent.children) {
+                if (sibling.type === 'decorator') {
+                    // Extract decorator name (e.g., @property -> "property")
+                    const decoratorText = sibling.text.replace('@', '');
+                    decorators.push(decoratorText);
+                }
+            }
+        }
+
+        return decorators;
+    }
+
+    /**
      * Helper: Check if we're inside a method/function scope using AST
      */
     private isInMethodScope(scopeStack: string[]): boolean {
         return scopeStack.includes('method') || scopeStack.includes('function');
+    }
+
+    /**
+     * Helper: Check if we're inside a class scope (including nested classes)
+     */
+    private isInClassScope(scopeStack: string[]): boolean {
+        return scopeStack.some(scope => scope === 'class' || scope.startsWith('class:'));
     }
 
     /**
@@ -592,7 +833,7 @@ export class TreeSitterSymbolExtractorFull {
     } {
         return {
             initialized: this.initialized,
-            supportedLanguages: ['typescript', 'javascript'],
+            supportedLanguages: ['typescript', 'javascript', 'python'],
             availableParsers: Array.from(this.parsers.keys())
         };
     }

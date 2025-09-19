@@ -101,7 +101,7 @@ export class StandaloneContextMcp {
                     this.logger.info(`Uploading ${processedChunks.length} processed chunks to namespace: ${namespace}`);
 
                     // Step 2: Process chunks in batches for embedding generation
-                    const BATCH_SIZE = 50;
+                    const BATCH_SIZE = 10; // Optimal batch size for embedding generation
                     for (let i = 0; i < processedChunks.length; i += BATCH_SIZE) {
                         const batch = processedChunks.slice(i, i + BATCH_SIZE);
 
