@@ -792,7 +792,8 @@ class StandaloneMCPServer {
 
                             // Use child process to avoid MCP timeout
                             const { spawn } = await import('child_process');
-                            const nodeProcess = spawn('node', ['background-indexing-worker.mjs', codebasePath, forceReindex.toString()], {
+                            const workerPath = path.resolve(__dirname, '..', 'background-indexing-worker.mjs');
+                            const nodeProcess = spawn('node', [workerPath, codebasePath, forceReindex.toString()], {
                                 detached: true,
                                 stdio: ['ignore', 'pipe', 'pipe'],
                                 env: {

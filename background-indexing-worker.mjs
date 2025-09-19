@@ -1,4 +1,10 @@
 // Production background indexing worker process
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 import { StandaloneContextMcp } from './dist/standalone-mcp-integration.js';
 
 // Get command line arguments
