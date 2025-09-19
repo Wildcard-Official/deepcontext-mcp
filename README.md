@@ -14,9 +14,6 @@
   <a href="https://join.slack.com/t/wildcard-community/shared_invite/zt-3dslre0yd-H8M_Ftsf8AJoB6nP~wVIpg">
     <img src="https://img.shields.io/badge/Slack-join-blueviolet?logo=slack" alt="Slack Community">
   </a>
-  <a href="https://discord.gg/7VU6HKq7cZ">
-    <img src="https://img.shields.io/discord/1334616501436682405?style=flat&logo=discord&logoColor=white&label=discord&color=7289DA" alt="Discord">
-  </a>
   <a href="https://x.com/wildcard_ai">
     <img src="https://img.shields.io/twitter/follow/wildcard_ai?style=social" alt="Twitter Follow">
   </a>
