@@ -392,7 +392,7 @@ export class IndexingOrchestrator {
 
         this.logger.info(`Uploading ${chunks.length} chunks to vector store and local metadata...`);
         
-        const batchSize = 8; // Reduced batch size to prevent Jina API truncation
+        const batchSize = 10; // Optimal batch size for embedding generation
         let successfulBatches = 0;
         let skippedBatches = 0;
 
