@@ -4,7 +4,7 @@ DeepContext provides semantic codebase search for coding agents, finding relevan
 
 ## Quickstart
 
-1. Visit the Wildcard <a href="https://wild-card.ai/deepcontext" target="_blank">DeepContext</a> page
+1. Visit the Wildcard <a href="https://wild-card.ai/deepcontext" target="_blank" rel="noopener noreferrer">DeepContext</a> page
 2. Click "Generate API Key"
 3. Copy your API key
 4. Paste installation command for your MCP client
