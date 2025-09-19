@@ -402,7 +402,7 @@ export class NamespaceManagerService {
             }
         }
 
-        const indexed = codebasePath ? !!currentCodebase : indexedList.length > 0;
+        const indexed = codebasePath ? (!!currentCodebase && !currentCodebase.failed) : indexedList.filter(cb => !cb.failed).length > 0;
         const fileCount = currentCodebase?.totalChunks || indexedList.reduce((sum, cb) => sum + cb.totalChunks, 0);
 
         return {

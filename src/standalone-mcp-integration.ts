@@ -1158,8 +1158,16 @@ class StandaloneMCPServer {
                     const chunkMatch = line.match(/✅ Uploaded (\d+) chunks to namespace/);
                     if (chunkMatch) {
                         successfulChunks = parseInt(chunkMatch[1]);
-                        totalChunks = successfulChunks; // Assume all uploaded chunks were successful
+                        totalChunks = Math.max(totalChunks, successfulChunks);
                     }
+                }
+
+                // Look for failure indicators
+                if (line.includes('❌ No chunks generated') ||
+                    line.includes('all files filtered out') ||
+                    line.includes('parsing failures') ||
+                    line.includes('Failed indexing attempt registered')) {
+                    successfulChunks = 0;
                 }
 
                 // Look for batch completion messages to count total batches
@@ -1178,14 +1186,18 @@ class StandaloneMCPServer {
                     }
                 }
 
-                // Extract chunks created from JSON result
+                // Extract chunks created from JSON result and check for success
                 if (line.includes('chunksCreated')) {
                     const chunkMatch = line.match(/"chunksCreated":\s*(\d+)/);
                     if (chunkMatch) {
                         const chunks = parseInt(chunkMatch[1]);
-                        if (chunks > totalChunks) {
-                            totalChunks = chunks;
-                            successfulChunks = chunks; // Assume all created chunks were successful
+                        totalChunks = Math.max(totalChunks, chunks);
+
+                        // Check if this indicates a successful or failed indexing
+                        if (line.includes('"success":true') || line.includes('"success": true')) {
+                            successfulChunks = chunks;
+                        } else if (line.includes('"success":false') || line.includes('"success": false') || chunks === 0) {
+                            successfulChunks = 0; // Failed indexing
                         }
                     }
                 }
@@ -1243,6 +1255,7 @@ class StandaloneMCPServer {
             result += `**Namespace**: ${cb.namespace}\n`;
             result += `**Files**: ${cb.fileCount}\n`;
             result += `**Last Indexed**: ${new Date(cb.lastIndexed).toLocaleString()}\n`;
+
 
             if (cb.failed) {
                 result += `**Status**: ❌ Indexing Failed\n`;
