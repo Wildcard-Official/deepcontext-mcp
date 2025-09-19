@@ -27,6 +27,7 @@ DeepContext is an MCP server that adds symbol-aware semantic search to Codex CLI
 2. Click "Generate API Key"
 3. Copy your API key
 4. Paste installation command for your MCP client
+5. Type `index this codebase` to index the current directory
 
 **Claude Code:**
 ```bash
