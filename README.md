@@ -44,6 +44,10 @@ args = ["-y", "@wildcard-ai/deepcontext@latest"]
 env = { "WILDCARD_API_KEY" = "your-wildcard-api-key" }
 ```
 
+## Demo
+https://github.com/user-attachments/assets/9a2d418f-497b-42b9-bbb2-f875ef0007b4
+
+
 ## Why DeepContext MCP?
 
 Most coding agents use grep based search that match exact text, these searches miss semantically related code and fill context windows with irrelevant results. Large codebases amplify this problem, where text search returns hundreds of matches that quickly overwhelm conversation capacity.  This leads to slow completions, more hallucinations, and lower success rates.
