@@ -100,7 +100,11 @@ export class NamespaceManagerService {
     /**
      * Get all indexed codebases
      */
-    getAllIndexedCodebases(): Map<string, IndexedCodebase> {
+    async getAllIndexedCodebases(): Promise<Map<string, IndexedCodebase>> {
+        // Ensure registry is loaded before returning data
+        if (this.indexedCodebases.size === 0) {
+            await this.loadIndexedCodebases();
+        }
         return new Map(this.indexedCodebases);
     }
 

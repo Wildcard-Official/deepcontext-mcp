@@ -340,10 +340,11 @@ export class StandaloneContextMcp {
         }
 
         const searchConfig = this.configurationService.getSearchConfig();
+        const indexedCodebases = await this.namespaceManagerService.getAllIndexedCodebases();
         const searchResult = await this.searchCoordinationService.searchWithIntelligence(
             query,
             codebasePath,
-            this.namespaceManagerService.getAllIndexedCodebases(),
+            indexedCodebases,
             maxResults || searchConfig.defaultResultLimit
         );
         
@@ -490,7 +491,8 @@ export class StandaloneContextMcp {
     async initialize(): Promise<void> {
         await this.namespaceManagerService.initialize();
         await this.symbolExtractor.initialize();
-        this.logger.info(`Initialized with ${this.namespaceManagerService.getAllIndexedCodebases().size} indexed codebases`);
+        const indexedCodebases = await this.namespaceManagerService.getAllIndexedCodebases();
+        this.logger.info(`Initialized with ${indexedCodebases.size} indexed codebases`);
     }
 }
 
