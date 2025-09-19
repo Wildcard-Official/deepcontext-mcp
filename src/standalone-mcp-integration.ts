@@ -616,6 +616,7 @@ class StandaloneMCPServer {
       <type>number</type>
       <description>Maximum number of code chunks to return</description>
       <default>5</default>
+      <best_practice>Keep at default 5 for focused results. Use multiple targeted searches rather than increasing this limit</best_practice>
     </parameter>
   </parameters>
 
@@ -630,6 +631,7 @@ class StandaloneMCPServer {
     <step>Use Read tool to explore discovered files in detail for complete implementation</step>
     <step>Use Grep tool for precise pattern matching of specific symbols or exact text</step>
     <step>Follow imports/exports from results to guide next searches</step>
+    <step>Prefer multiple focused searches with 5 results over single large searches</step>
     <step>Search provides discovery, not complete solutions</step>
   </workflow>
 
