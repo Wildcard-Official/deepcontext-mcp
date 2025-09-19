@@ -19,19 +19,7 @@
   </a>
 </p>
 
-DeepContext is an MCP server that adds symbol-aware semantic search to Codex CLI, Claude Code, and other agents, giving them more precise context of even the largest codebases.
-
-## Why DeepContext MCP?
-
-Most coding agents use grep based search that match exact text, these searches miss semantically related code and fill context windows with irrelevant results. Large codebases amplify this problem, where text search returns hundreds of matches that quickly overwhelm conversation capacity.  This leads to slow completions, more hallucinations, and lower success rates.
-
-DeepContext provides agents with intelligent search that preserves context windows by finding only relevant code chunks.
-
-- **Semantic accuracy**: Matches code by meaning and relationships rather than text patterns, finding related functions across files that keyword search misses.
-
-- **Reduced token usage**: Returns precise code chunks instead of every file containing your search terms, preserving conversation context windows and reducing costs.
-
-- **Search speed**: Searches code immediately through pre-indexed data for instant file discovery.
+DeepContext is an MCP server that adds symbol-aware semantic search to Codex CLI, Claude Code, and other agents, giving them more precise context of even the largest codebases. Currently supports Typescript and Python.
 
 ## Quickstart
 
@@ -55,6 +43,18 @@ command = "npx"
 args = ["-y", "@wildcard-ai/deepcontext@latest"]
 env = { "WILDCARD_API_KEY" = "your-wildcard-api-key" }
 ```
+
+## Why DeepContext MCP?
+
+Most coding agents use grep based search that match exact text, these searches miss semantically related code and fill context windows with irrelevant results. Large codebases amplify this problem, where text search returns hundreds of matches that quickly overwhelm conversation capacity.  This leads to slow completions, more hallucinations, and lower success rates.
+
+DeepContext provides agents with intelligent search that preserves context windows by finding only relevant code chunks.
+
+- **Semantic accuracy**: Matches code by meaning and relationships rather than text patterns, finding related functions across files that keyword search misses.
+
+- **Reduced token usage**: Returns precise code chunks instead of every file containing your search terms, preserving conversation context windows and reducing costs.
+
+- **Search speed**: Searches code immediately through pre-indexed data for instant file discovery.
 
 ## MCP Tools
 
