@@ -1,6 +1,6 @@
 {
   "name": "@wildcard-ai/deepcontext",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Advanced codebase indexing and semantic search MCP server",
   "main": "dist/standalone-mcp-integration.js",
   "type": "module",
