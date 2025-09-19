@@ -576,12 +576,20 @@ When to use:
   Discovery Workflow:
   1. Search discovers relevant files and entry points, use imports and exports to find related files
   2. Use Read tool to explore discovered files in detail for complete implementation
-  3. Search provides discovery, not complete solutions
+  3. Use Grep tool for precise pattern matching of specific symbols or exact text
+  4. Follow imports/exports from results to guide next searches
+  5. Search provides discovery, not complete solutions
 
   Result Interpretation:
   - Results ranked by semantic relevance, not code importance
   - Implementation code often appears in results 2-5, not just #1
   - Look for actual code files (.ts, .js, .sql) over documentation (.md, .txt)
+
+  Tool Limitations & Follow-up:
+    - May miss foundational type definitions, Use Grep for "interface PluginName"
+    - Shows implementations, not core contracts, Follow up with Read for full context
+    - Semantic chunks may lack architectural hierarchy, Manual file exploration needed
+    - For precise symbol search, Use Grep tool for exact matches
 
   Returns: Code chunks with file paths, line numbers, relevance scores, symbol information, imports, and exports.
 
