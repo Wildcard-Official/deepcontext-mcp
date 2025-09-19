@@ -655,6 +655,10 @@ class StandaloneMCPServer {
       <solution>Manual file exploration needed</solution>
     </limitation>
     <limitation>
+      <description>Excludes filtered content: test files, generated code, config files, minified files, large data files</description>
+      <solution>Use Grep tool to search test files (*.test.*, *.spec.*, __tests__, /tests/), config files, or generated content</solution>
+    </limitation>
+    <limitation>
       <description>For precise symbol search</description>
       <solution>Use Grep tool for exact matches</solution>
     </limitation>
