@@ -537,21 +537,44 @@ class StandaloneMCPServer {
             const tools: Tool[] = [
                 {
                     name: 'index_codebase',
-                    description: `Prepares a codebase for intelligent search by creating a searchable index.
+                    description: `<tool>
+  <purpose>Prepares a codebase for intelligent search by creating a searchable index</purpose>
 
-**When to use**: Call this first before searching any new codebase. Required prerequisite for search_codebase.
+  <when_to_use>
+    <scenario>Call this first before searching any new codebase</scenario>
+    <scenario>Required prerequisite for search_codebase</scenario>
+  </when_to_use>
 
-**Use force_reindex=true when**: Code has changed significantly or search results seem outdated.`,
+  <parameters>
+    <parameter name="codebase_path" required="true">
+      <type>string</type>
+      <description>ABSOLUTE path to the directory containing source code files</description>
+      <examples>
+        <valid>/Users/name/project</valid>
+        <valid>/home/user/code/repo</valid>
+        <invalid>.</invalid>
+        <invalid>../project</invalid>
+        <invalid>relative/path</invalid>
+      </examples>
+      <validation>Must be absolute path starting with / (Unix) or C:\\ (Windows)</validation>
+    </parameter>
+
+    <parameter name="force_reindex" required="false">
+      <type>boolean</type>
+      <description>Force complete reindexing even if already indexed</description>
+      <default>false</default>
+      <when_to_use>Code has changed significantly or search results seem outdated</when_to_use>
+    </parameter>
+  </parameters>
+</tool>`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             codebase_path: {
-                                type: 'string',
-                                description: 'Absolute path to the directory containing source code files'
+                                type: 'string'
                             },
                             force_reindex: {
                                 type: 'boolean',
-                                description: 'Force complete reindexing even if already indexed (default: false)',
                                 default: false
                             }
                         },
@@ -560,103 +583,183 @@ class StandaloneMCPServer {
                 },
                 {
                     name: 'search_codebase',
-                    description: `Finds relevant code in an indexed codebase using natural language or keyword queries.
+                    description: `<tool>
+  <purpose>Finds relevant code in an indexed codebase using natural language or keyword queries</purpose>
 
-When to use:
-  - Find specific functions, classes, or code patterns
-  - Get context before making changes to understand dependencies
-  - Explore how existing systems work
-  - Locate examples of API usage or patterns
+  <when_to_use>
+    <scenario>Find specific functions, classes, or code patterns</scenario>
+    <scenario>Get context before making changes to understand dependencies</scenario>
+    <scenario>Explore how existing systems work</scenario>
+    <scenario>Locate examples of API usage or patterns</scenario>
+  </when_to_use>
 
-  Search Strategy:
-  - Use specific technical terms: "authentication middleware", "database connection", "error handler"
-  - Focus on implementation: "user login function" rather than "user management system"
-  - Include file types when relevant: "SQL migration", "React component", "API endpoint"
+  <parameters>
+    <parameter name="query" required="true">
+      <type>string</type>
+      <description>Natural language or keyword search query describing what code to find</description>
+    </parameter>
 
-  Discovery Workflow:
-  1. Search discovers relevant files and entry points, use imports and exports to find related files
-  2. Use Read tool to explore discovered files in detail for complete implementation
-  3. Use Grep tool for precise pattern matching of specific symbols or exact text
-  4. Follow imports/exports from results to guide next searches
-  5. Search provides discovery, not complete solutions
+    <parameter name="codebase_path" required="true">
+      <type>string</type>
+      <description>ABSOLUTE path to the codebase directory to search</description>
+      <examples>
+        <valid>/Users/name/project</valid>
+        <valid>/home/user/code/repo</valid>
+        <invalid>.</invalid>
+        <invalid>../project</invalid>
+        <invalid>relative/path</invalid>
+      </examples>
+      <validation>Must be absolute path starting with / (Unix) or C:\\ (Windows)</validation>
+    </parameter>
 
-  Result Interpretation:
-  - Results ranked by semantic relevance, not code importance
-  - Implementation code often appears in results 2-5, not just #1
-  - Look for actual code files (.ts, .js, .sql) over documentation (.md, .txt)
+    <parameter name="max_results" required="false">
+      <type>number</type>
+      <description>Maximum number of code chunks to return</description>
+      <default>5</default>
+    </parameter>
+  </parameters>
 
-  Tool Limitations & Follow-up:
-    - May miss foundational type definitions, Use Grep for "interface PluginName"
-    - Shows implementations, not core contracts, Follow up with Read for full context
-    - Semantic chunks may lack architectural hierarchy, Manual file exploration needed
-    - For precise symbol search, Use Grep tool for exact matches
+  <strategy>
+    <guideline>Use specific technical terms: "authentication middleware", "database connection", "error handler"</guideline>
+    <guideline>Focus on implementation: "user login function" rather than "user management system"</guideline>
+    <guideline>Include file types when relevant: "SQL migration", "React component", "API endpoint"</guideline>
+  </strategy>
 
-  Returns: Code chunks with file paths, line numbers, relevance scores, symbol information, imports, and exports.
+  <workflow>
+    <step>Search discovers relevant files and entry points, use imports and exports to find related files</step>
+    <step>Use Read tool to explore discovered files in detail for complete implementation</step>
+    <step>Use Grep tool for precise pattern matching of specific symbols or exact text</step>
+    <step>Follow imports/exports from results to guide next searches</step>
+    <step>Search provides discovery, not complete solutions</step>
+  </workflow>
 
-  Prerequisite: Codebase must be indexed first with index_codebase.`,
+  <result_interpretation>
+    <point>Results ranked by semantic relevance, not code importance</point>
+    <point>Implementation code often appears in results 2-5, not just #1</point>
+    <point>Look for actual code files (.ts, .js, .sql) over documentation (.md, .txt)</point>
+  </result_interpretation>
+
+  <limitations>
+    <limitation>
+      <description>May miss foundational type definitions</description>
+      <solution>Use Grep for "interface PluginName"</solution>
+    </limitation>
+    <limitation>
+      <description>Shows implementations, not core contracts</description>
+      <solution>Follow up with Read for full context</solution>
+    </limitation>
+    <limitation>
+      <description>Semantic chunks may lack architectural hierarchy</description>
+      <solution>Manual file exploration needed</solution>
+    </limitation>
+    <limitation>
+      <description>For precise symbol search</description>
+      <solution>Use Grep tool for exact matches</solution>
+    </limitation>
+  </limitations>
+
+  <returns>Code chunks with file paths, line numbers, relevance scores, symbol information, imports, and exports</returns>
+  <prerequisites>Codebase must be indexed first with index_codebase</prerequisites>
+</tool>`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             query: {
-                                type: 'string',
-                                description: 'Natural language or keyword search query describing what code to find'
+                                type: 'string'
                             },
                             codebase_path: {
-                                type: 'string',
-                                description: 'Absolute path to the codebase to search (optional if only one codebase indexed)'
+                                type: 'string'
                             },
                             max_results: {
                                 type: 'number',
-                                description: 'Maximum number of code chunks to return (default: 5)',
                                 default: 5
                             }
                         },
-                        required: ['query']
+                        required: ['query', 'codebase_path']
                     }
                 },
                 {
                     name: 'get_indexing_status',
-                    description: `Check if codebases are indexed and get their status information.
+                    description: `<tool>
+  <purpose>Check if codebases are indexed and get their status information</purpose>
 
-**Enhanced Features**:
-- Shows completion statistics for finished indexing (success rates, processing time, performance metrics)
-- Displays batch processing details (successful/skipped batches)
-- References log files for detailed debugging
+  <enhanced_features>
+    <feature>Shows completion statistics for finished indexing (success rates, processing time, performance metrics)</feature>
+    <feature>Displays batch processing details (successful/skipped batches)</feature>
+    <feature>References log files for detailed debugging</feature>
+  </enhanced_features>
 
-**When to use**:
-- Before indexing to check if already done
-- After indexing to see completion statistics and success rates
-- Debug why search returned no results
-- Confirm indexing completed successfully
-- Get overview of all indexed codebases
+  <when_to_use>
+    <scenario>Before indexing to check if already done</scenario>
+    <scenario>After indexing to see completion statistics and success rates</scenario>
+    <scenario>Debug why search returned no results</scenario>
+    <scenario>Confirm indexing completed successfully</scenario>
+    <scenario>Get overview of all indexed codebases</scenario>
+  </when_to_use>
 
-**Returns**: Enhanced indexing status with completion statistics when available.`,
+  <parameters>
+    <parameter name="codebase_path" required="false">
+      <type>string</type>
+      <description>ABSOLUTE path to specific codebase to check</description>
+      <examples>
+        <valid>/Users/name/project</valid>
+        <valid>/home/user/code/repo</valid>
+        <invalid>.</invalid>
+        <invalid>../project</invalid>
+        <invalid>relative/path</invalid>
+      </examples>
+      <validation>Must be absolute path starting with / (Unix) or C:\\ (Windows)</validation>
+      <optional_behavior>Omit to get status of all indexed codebases</optional_behavior>
+    </parameter>
+  </parameters>
+
+  <returns>Enhanced indexing status with completion statistics when available</returns>
+</tool>`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             codebase_path: {
-                                type: 'string',
-                                description: 'Optional: Absolute path to specific codebase to check. Omit to get status of all indexed codebases'
+                                type: 'string'
                             }
                         }
                     }
                 },
                 {
                     name: 'clear_index',
-                    description: `Permanently removes all indexed data for a codebase.
+                    description: `<tool>
+  <purpose>Permanently removes all indexed data for a codebase</purpose>
 
-**When to use**:
-- Clear stale data before reindexing after major code changes
-- Remove old indexed codebases no longer needed
-- Fix corrupted index causing search issues
+  <when_to_use>
+    <scenario>Clear stale data before reindexing after major code changes</scenario>
+    <scenario>Remove old indexed codebases no longer needed</scenario>
+    <scenario>Fix corrupted index causing search issues</scenario>
+  </when_to_use>
 
-**Warning**: Destructive operation. All search capabilities lost until reindexing.`,
+  <parameters>
+    <parameter name="codebase_path" required="false">
+      <type>string</type>
+      <description>ABSOLUTE path to the codebase to clear</description>
+      <examples>
+        <valid>/Users/name/project</valid>
+        <valid>/home/user/code/repo</valid>
+        <invalid>.</invalid>
+        <invalid>../project</invalid>
+        <invalid>relative/path</invalid>
+      </examples>
+      <validation>Must be absolute path starting with / (Unix) or C:\\ (Windows)</validation>
+      <optional_behavior>Omit to clear ALL indexed codebases (use with caution)</optional_behavior>
+    </parameter>
+  </parameters>
+
+  <warnings>
+    <warning>Destructive operation. All search capabilities lost until reindexing</warning>
+  </warnings>
+</tool>`,
                     inputSchema: {
                         type: 'object',
                         properties: {
                             codebase_path: {
-                                type: 'string',
-                                description: 'Absolute path to the codebase to clear. Omit to clear ALL indexed codebases (use with caution)'
+                                type: 'string'
                             }
                         }
                     }
@@ -756,11 +859,14 @@ When to use:
                     
                     case 'search_codebase':
                         console.log(`🔍 STANDALONE MCP TOOL CALLED: search_codebase with query "${(args as any).query}"`);
-                        
+
+                        // Resolve relative paths to absolute paths (consistent with index_codebase)
+                        const resolvedCodebasePath = (args as any).codebase_path ? path.resolve((args as any).codebase_path) : undefined;
+
                         // Note: Incremental indexing is automatically triggered before each search
                         const searchResult = await this.contextMcp.searchWithIntelligence(
                             (args as any).query,
-                            (args as any).codebase_path,
+                            resolvedCodebasePath,
                             (args as any).max_results || 5
                         );
                         console.log(`🔍 STANDALONE MCP RESULT: ${searchResult.results.length} results, top score: ${searchResult.results[0]?.score}`);
@@ -804,9 +910,11 @@ When to use:
                         };
                     
                     case 'get_indexing_status':
-                        const status = await this.contextMcp.getIndexingStatus((args as any).codebase_path);
+                        // Resolve relative paths to absolute paths (consistent with other tools)
+                        const resolvedStatusPath = (args as any).codebase_path ? path.resolve((args as any).codebase_path) : undefined;
+                        const status = await this.contextMcp.getIndexingStatus(resolvedStatusPath);
                         // Use the current codebase path if none was explicitly provided
-                        let codebasePathForLogs = (args as any).codebase_path || status.currentCodebase?.path;
+                        let codebasePathForLogs = resolvedStatusPath || status.currentCodebase?.path;
 
                         // If we still don't have a path, try to get it from the first indexed codebase
                         if (!codebasePathForLogs && status.indexedCodebases && status.indexedCodebases.length > 0) {
@@ -823,7 +931,9 @@ When to use:
                         };
                     
                     case 'clear_index':
-                        const clearResult = await this.contextMcp.clearIndex((args as any).codebase_path);
+                        // Resolve relative paths to absolute paths (consistent with other tools)
+                        const resolvedClearPath = (args as any).codebase_path ? path.resolve((args as any).codebase_path) : undefined;
+                        const clearResult = await this.contextMcp.clearIndex(resolvedClearPath);
                         
                         return {
                             content: [{
