@@ -1,6 +1,40 @@
-# DeepContext MCP
+<p align="center">
+  <img alt="DeepContext Logo" src="https://github.com/user-attachments/assets/6dd1b4a4-5ce3-41cb-acc0-b3eed32d5f8e" width="500" height="296">
+</p>
 
-DeepContext provides semantic codebase search for coding agents, finding relevant code quickly while preserving context windows.
+<h1 align="center">Smarter Context for Large Codebases</h1>
+
+<p align="center">
+  <a href="https://github.com/Wildcard-Official/deepcontext-mcp/stargazers">
+    <img src="https://img.shields.io/github/stars/Wildcard-Official/deepcontext-mcp?style=social" alt="GitHub stars">
+  </a>
+  <a href="https://www.npmjs.com/package/@wildcard-ai/deepcontext">
+    <img src="https://img.shields.io/npm/v/@wildcard-ai/deepcontext" alt="NPM Version">
+  </a>
+  <a href="https://join.slack.com/t/wildcard-community/shared_invite/zt-3dslre0yd-H8M_Ftsf8AJoB6nP~wVIpg">
+    <img src="https://img.shields.io/badge/Slack-join-blueviolet?logo=slack" alt="Slack Community">
+  </a>
+  <a href="https://discord.gg/7VU6HKq7cZ">
+    <img src="https://img.shields.io/discord/1334616501436682405?style=flat&logo=discord&logoColor=white&label=discord&color=7289DA" alt="Discord">
+  </a>
+  <a href="https://x.com/wildcard_ai">
+    <img src="https://img.shields.io/twitter/follow/wildcard_ai?style=social" alt="Twitter Follow">
+  </a>
+</p>
+
+DeepContext is an MCP server that adds symbol-aware semantic search to Codex CLI, Claude Code, and other agents, giving them more precise context of even the largest codebases.
+
+## Why DeepContext MCP?
+
+Most coding agents use grep based search that match exact text, these searches miss semantically related code and fill context windows with irrelevant results. Large codebases amplify this problem, where text search returns hundreds of matches that quickly overwhelm conversation capacity.  This leads to slow completions, more hallucinations, and lower success rates.
+
+DeepContext provides agents with intelligent search that preserves context windows by finding only relevant code chunks.
+
+- **Semantic accuracy**: Matches code by meaning and relationships rather than text patterns, finding related functions across files that keyword search misses.
+
+- **Reduced token usage**: Returns precise code chunks instead of every file containing your search terms, preserving conversation context windows and reducing costs.
+
+- **Search speed**: Searches code immediately through pre-indexed data for instant file discovery.
 
 ## Quickstart
 
@@ -25,28 +59,18 @@ args = ["-y", "@wildcard-ai/deepcontext@latest"]
 env = { "WILDCARD_API_KEY" = "your-wildcard-api-key" }
 ```
 
-## Why DeepContext MCP?
-
-Coding agents use grep based search that match exact text, these searches miss semantically related code and fill context windows with irrelevant results. Large codebases amplify this problem, where text search returns hundreds of matches that quickly overwhelm conversation capacity. DeepContext provides agents with intelligent search that preserves context windows by finding only relevant code chunks.
-
-- **Semantic accuracy**: Matches code by meaning and relationships rather than text patterns, finding related functions across files that keyword search misses.
-
-- **Reduced token usage**: Returns precise code chunks instead of every file containing your search terms, preserving conversation context windows.
-
-- **Search speed**: Searches code immediately through pre-indexed data for instant file discovery.
-
 ## MCP Tools
 
-### `index_codebase`
+#### `index_codebase`
 Creates a searchable index of your codebase for semantic search.
 
-### `search_codebase`
+#### `search_codebase`
 Finds relevant code using natural language or keyword queries.
 
-### `get_indexing_status`
+#### `get_indexing_status`
 Shows indexing status and file counts for your codebases.
 
-### `clear_index`
+#### `clear_index`
 Removes all indexed data for a codebase.
 
 ## Architecture
