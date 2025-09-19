@@ -4,7 +4,7 @@ DeepContext provides semantic codebase search for coding agents, finding relevan
 
 ## Quickstart
 
-1. Visit the Wildcard [DeepContext](https://wild-card.ai/deepcontext) page
+1. Visit the Wildcard <a href="https://wild-card.ai/deepcontext" target="_blank">DeepContext</a> page
 2. Click "Generate API Key"
 3. Copy your API key
 4. Paste installation command for your MCP client
@@ -40,33 +40,16 @@ Coding agents use grep based search that match exact text, these searches miss s
 ### `index_codebase`
 Creates a searchable index of your codebase for semantic search.
 
-**Parameters:**
-- `codebase_path`: Absolute path to the directory containing source code files
-- `force_reindex`: Force complete reindexing even if already indexed (default: false)
-
 ### `search_codebase`
 Finds relevant code using natural language or keyword queries.
-
-**Parameters:**
-- `query`: Natural language or keyword search query describing what code to find
-- `codebase_path`: Absolute path to the codebase directory to search
-- `max_results`: Maximum number of code chunks to return (default: 5)
 
 ### `get_indexing_status`
 Shows indexing status and file counts for your codebases.
 
-**Parameters:**
-- `codebase_path`: Absolute path to specific codebase to check. Omit to get status of all indexed codebases
-
 ### `clear_index`
 Removes all indexed data for a codebase.
 
-**Parameters:**
-- `codebase_path`: Absolute path to the codebase to clear. Omit to clear ALL indexed codebases
-
 ## Architecture
-
-DeepContext uses a two layer architecture that separates MCP protocol handling from core search intelligence.
 
 **MCP Integration Flow**
 - Coding Agent communicates with DeepContext through the Model Context Protocol
