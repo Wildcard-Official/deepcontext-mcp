@@ -1,7 +1,8 @@
 {
   "name": "@wildcard-ai/deepcontext",
-  "version": "0.1.13",
+  "version": "0.1.15",
   "description": "Advanced codebase indexing and semantic search MCP server",
+  "mcpName": "ai.wild-card/deepcontext",
   "main": "dist/standalone-mcp-integration.js",
   "type": "module",
   "bin": {
@@ -38,6 +39,7 @@
     "tree-sitter-typescript": "^0.23.2"
   },
   "devDependencies": {
+    "@jirutka/ajv-cli": "^6.0.0",
     "@types/node": "^20.0.0",
     "tsx": "^4.11.0",
     "typescript": "^5.4.5"

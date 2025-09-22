@@ -1,0 +1,45 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-16/server.schema.json",
+  "name": "ai.wild-card/deepcontext",
+  "description": "Advanced codebase indexing and semantic search MCP server",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/Wildcard-Official/deepcontext",
+    "source": "github"
+  },
+  "version": "0.1.15",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@wildcard-ai/deepcontext",
+      "version": "0.1.15",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "description": "Jina AI API key for embeddings generation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "JINA_API_KEY"
+        },
+        {
+          "description": "Turbopuffer API key for vector storage",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "TURBOPUFFER_API_KEY"
+        },
+        {
+          "description": "Wildcard API key for authentication",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "WILDCARD_API_KEY"
+        }
+      ]
+    }
+  ]
+}

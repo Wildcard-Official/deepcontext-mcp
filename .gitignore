@@ -52,3 +52,6 @@ test_workspace/
 # Temporary files
 tmp/
 temp/
+
+# Private key
+key.pem
